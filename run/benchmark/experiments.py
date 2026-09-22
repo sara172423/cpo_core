@@ -43,6 +43,14 @@ ALGORITHM_LABELS = {
     "to_v2i": "TO-V2I",
     "to_wo_c": "TO-w.o.-C",
     "to_wo_r": "TO-w.o.-R",
+    "gwo_aco": "D-GWO",
+    "gwo": "D-GWO",
+    "gpc": "D-GPC",
+    "cpo": "DCC-DCPO",
+    "dcpo_base": "DCPO-base",
+    "dcpo_criticality": "DCPO+C",
+    "dcpo_cache": "DCPO+K",
+    "puma": "D-PO",
 }
 PAPER_FIGURE_ALGORITHMS = {
     "figure_6": ("dcsga",),
@@ -1471,6 +1479,15 @@ def _iteration_diagnostics(item: Dict[str, Any]) -> Dict[str, Any]:
             (item[key] for key in input_keys if item.get(key) is not None),
             None,
         )
+    defenses = item.get("defense_trials", {}) or {}
+    for name in (
+        "sight",
+        "sound",
+        "odor",
+        "physical_attack",
+        "stagnation_escape",
+    ):
+        result[f"cpo_{name}_trials"] = int(defenses.get(name, 0) or 0)
     return result
 
 
@@ -1658,6 +1675,14 @@ def _plot_figure_6(rows: Sequence[Dict[str, Any]],output_base: Path,) -> None:
 
     styles = {
         "dcsga": {"color": "#0072B2", "marker": "o"},
+        "gwo_aco": {"color": "#7B2CBF", "marker": "s"},
+        "gwo": {"color": "#7B2CBF", "marker": "s"},
+        "gpc": {"color": "#2A9D8F", "marker": "^"},
+        "cpo": {"color": "#D81B60", "marker": "P"},
+        "dcpo_base": {"color": "#6C757D", "marker": "x"},
+        "dcpo_criticality": {"color": "#F4A261", "marker": "v"},
+        "dcpo_cache": {"color": "#00A896", "marker": ">"},
+        "puma": {"color": "#E76F51", "marker": "D"},
     }
 
     figure, axis = plt.subplots(figsize=(8.0, 5.2))
@@ -1798,6 +1823,14 @@ def _plot_figure_6_nfe(
         raise ValueError("Figure 6 has no common NFE interval")
     styles = {
         "dcsga": {"color": "#0072B2", "marker": "o"},
+        "gwo_aco": {"color": "#7B2CBF", "marker": "s"},
+        "gwo": {"color": "#7B2CBF", "marker": "s"},
+        "gpc": {"color": "#2A9D8F", "marker": "^"},
+        "cpo": {"color": "#D81B60", "marker": "P"},
+        "dcpo_base": {"color": "#6C757D", "marker": "x"},
+        "dcpo_criticality": {"color": "#F4A261", "marker": "v"},
+        "dcpo_cache": {"color": "#00A896", "marker": ">"},
+        "puma": {"color": "#E76F51", "marker": "D"},
     }
     figure, axis = plt.subplots(figsize=(8.0, 5.2))
     for algorithm in _algorithms_from_rows(rows):
@@ -1966,6 +1999,34 @@ def _line_panel(axis, rows: Sequence[Dict[str, Any]], metric: str, x_key: str, x
             "marker": "P",
             "linestyle": (0, (1, 1)),
         },
+        "gwo_aco": {
+            "color": "#7B2CBF",
+            "marker": "s",
+            "linestyle": "--",
+        },
+        "gwo": {
+            "color": "#7B2CBF",
+            "marker": "s",
+            "linestyle": "--",
+        },
+        "gpc": {
+            "color": "#2A9D8F",
+            "marker": "^",
+            "linestyle": "--",
+        },
+        "puma": {
+            "color": "#E76F51",
+            "marker": "D",
+            "linestyle": "--",
+        },
+        "cpo": {
+            "color": "#D81B60",
+            "marker": "X",
+            "linestyle": "--",
+        },
+        "dcpo_base": {"color": "#6C757D", "marker": "x", "linestyle": ":"},
+        "dcpo_criticality": {"color": "#F4A261", "marker": "v", "linestyle": "-."},
+        "dcpo_cache": {"color": "#00A896", "marker": ">", "linestyle": "-."},
     }
 
     all_x_values = set()
@@ -2137,6 +2198,14 @@ def _plot_figure_9(rows: Sequence[Dict[str, Any]],output_base: Path,) -> None:
     colors = {
         "dcsga": "#0072B2",
         "dtosc": "#009E73",
+        "gwo_aco": "#7B2CBF",
+        "gwo": "#7B2CBF",
+        "gpc": "#2A9D8F",
+        "cpo": "#D81B60",
+        "dcpo_base": "#6C757D",
+        "dcpo_criticality": "#F4A261",
+        "dcpo_cache": "#00A896",
+        "puma": "#E76F51",
     }
 
     for algorithm_index, algorithm in enumerate(algorithms):
@@ -2223,6 +2292,14 @@ def _plot_figure_10(
     styles = {
         "dcsga": {"color": "#0072B2", "marker": "o"},
         "dtosc": {"color": "#009E73", "marker": "^"},
+        "gwo_aco": {"color": "#7B2CBF", "marker": "s"},
+        "gwo": {"color": "#7B2CBF", "marker": "s"},
+        "gpc": {"color": "#2A9D8F", "marker": "^"},
+        "cpo": {"color": "#D81B60", "marker": "X"},
+        "dcpo_base": {"color": "#6C757D", "marker": "x"},
+        "dcpo_criticality": {"color": "#F4A261", "marker": "v"},
+        "dcpo_cache": {"color": "#00A896", "marker": ">"},
+        "puma": {"color": "#E76F51", "marker": "D"},
     }
 
     for algorithm in _algorithms_from_rows(rows):
@@ -2618,6 +2695,14 @@ def run_paper_experiment(
     ]
     if unknown_algorithms:
         raise ValueError(f"Unsupported comparison algorithms: {unknown_algorithms}")
+    if (
+        population_size is not None
+        and ({"gwo", "gwo_aco"} & set(selected_algorithms))
+        and int(population_size) < 3
+    ):
+        raise ValueError(
+            "gwo requires population_size >= 3 for alpha, beta, and delta leaders"
+        )
     if figure == "figure_6" and "dtosc" in selected_algorithms:
         raise ValueError("DTOSC has no population convergence history for Figure 6")
     algorithms = selected_algorithms
@@ -3144,6 +3229,24 @@ def run_paper_experiment(
         ],
         "dcsga_rank_seed_aligned": True,
         "dcsga_rank_recomputed_per_run": True,
+        "proposed_method_guidance": {
+            "algorithm": "cpo",
+            "name": "DCC-DCPO",
+            "fitness_policy": "paper evaluator shared unchanged with every comparator",
+            "structural_criticality": "0.65 normalized seeded HEFT rank + 0.35 normalized transitive DAG reach; protected during exploration and targeted during exploitation",
+            "cache_coupling": "capacity-feasible causal forward same-service reuse used only in odor proposals; block members follow the anchor provider actually selected",
+            "success_memory": "accepted objective-improving moves only",
+            "static_model_prior": "bounded proposal prior; never a fitness bonus",
+            "prefetching": False,
+            "final_fitness_bonus": False,
+        },
+        "baseline_isolation": {
+            "gpc": "no CPO criticality, cache affinity, success memory, or model prior",
+            "gwo": "D-GWO without pheromone, rank, or predictive-cache guidance",
+            "gwo_aco": "deprecated compatibility alias for the same isolated D-GWO execution",
+            "puma": "no CPO criticality, cache affinity, success memory, or model prior",
+            "common_components": "scenario, feasible domains, task order, repair, exact evaluator, seed, population size, and NFE budget",
+        },
         "algorithms": list(algorithms),
         "comparison_mode": comparison_mode,
         "statistical_protocol": {
@@ -3278,6 +3381,104 @@ def run_paper_experiment(
                 ),
                 "discard_schedule": "min(1, 2*p0/max(iteration,1))",
                 "initialization": "paper greedy plus one second-best task mutation per nest",
+            },
+            "gpc": {
+                "name": "D-GPC",
+                "population_size": int(actual_population_size),
+                "greedy_ratio": 0.70,
+                "diverse_dlhs_ratio": 0.30,
+                "sparse_near_greedy_fallback": True,
+                "gravity": 9.8,
+                "ramp_angle_degrees": 14.0,
+                "friction_min": 1.0,
+                "friction_max": 10.0,
+                "substitution_probability": 0.50,
+                "stagnation_escape_after": 5,
+                "restart_fraction": 0.15,
+                "elite_ratio": 0.20,
+                "service_affinity_memory": False,
+                "rank_guidance": False,
+                "cache_guidance": False,
+                "domain_guidance": "none; comparator retains physical GPC controls and feasible categorical projection only",
+                "categorical_move": "dimension-normalised sparse physical GPC projection",
+            },
+            "gwo": {
+                "name": "D-GWO",
+                "reference_doi": "10.1016/j.advengsoft.2013.12.007",
+                "population_size": int(actual_population_size),
+                "greedy_ratio": 0.90,
+                "diverse_dlhs_ratio": 0.10,
+                "sparse_near_greedy_fallback": True,
+                "a_schedule": "nonlinear 2-to-0 with bounded diversity/stagnation correction",
+                "stagnation_escape_after": 5,
+                "escape_fraction": 0.15,
+                "pheromone_guidance": False,
+                "rank_guidance": False,
+                "cache_guidance": False,
+                "alpha_neighborhood": "one-coordinate alpha/beta/delta-guided with a phase-dependent exploration floor",
+                "categorical_move": "alpha-beta-delta encircling inside an O(sqrt(D)) trust region",
+                "article_exact": False,
+            },
+            "puma": {
+                "name": "D-PO",
+                "reference_doi": "10.1007/s10586-023-04221-5",
+                "population_size": int(actual_population_size),
+                "greedy_ratio": 0.0,
+                "categorical_coverage_ratio": 1.0,
+                "unexperienced_iterations": 3,
+                "phase_weights": [0.50, 0.50, 0.30],
+                "mega_exploration": 0.99,
+                "mega_exploitation": 0.99,
+                "initial_crossover_probability": 0.20,
+                "exploitation_q": 0.67,
+                "exploitation_beta": 2.0,
+                "phase_selection": "rolling improvement and improvement-per-NFE hyper-heuristic",
+                "categorical_move": "domain-valid random-global/six-peer differential exploration and best/peer/consensus exploitation",
+                "survival": "greedy phase survival and best-N pooled survival in the first three learning iterations",
+                "article_exact": False,
+            },
+            "cpo": {
+                "name": "DCC-DCPO",
+                "revision": "deadline-dependency-cache-coupled-v7",
+                "reference_doi": "10.1016/j.knosys.2023.111257",
+                "population_size": int(actual_population_size),
+                "greedy_ratio": 0.75,
+                "diverse_dlhs_ratio": 0.25,
+                "four_defenses": ["sight", "sound", "odor", "physical_attack"],
+                "exploration_defenses": ["sight", "sound"],
+                "exploitation_defenses": ["odor", "physical_attack"],
+                "cpr_cycles": 2,
+                "cpr_minimum_ratio": 0.80,
+                "stagnation_restart_after": 3,
+                "restart_fraction": 0.15,
+                "success_memory_evaporation": 0.10,
+                "provider_memory_weight": 0.65,
+                "adaptation_clock": "consumed search NFE when max_function_evaluations is set; generation fraction otherwise",
+                "minimum_defense_shares": {
+                    "sight": 0.10,
+                    "sound": 0.10,
+                    "odor": 0.16,
+                    "physical_attack": 0.28,
+                },
+                "elite_profile_size": 8,
+                "physical_archive_probability": 0.88,
+                "exploration_radius": "ceil(2 + (ceil(log2(D+1))-2)*(1-progress))",
+                "exploitation_radius": "odor uses 1-to-4 coordinates but keeps the minimum meaningful two-task block when prospective same-service reuse exists; physical attack changes one coordinate",
+                "criticality_guidance": "0.70 structural criticality plus 0.30 normalized owning-application deadline pressure; structural criticality is 0.65 normalized seeded HEFT rank plus 0.35 normalized transitive DAG reach; proposal selection only",
+                "elite_disagreement_guidance": "rank-weighted top-8 provider disagreement guides physical attacks",
+                "service_affinity_guidance": "capacity-feasible causal forward-only same-service reuse; odor retains an anchor-plus-one-future-request block at late NFE and selected later block members deterministically follow the feasible provider actually chosen by the anchor; exact common evaluation accepts or rejects the block",
+                "static_model_guidance": "per-task provider prior derived from the common computation-time/energy equations and the article alpha/beta weights; used only for bounded exploitation proposals",
+                "static_model_guidance_max_probability": 0.35,
+                "static_model_guidance_scope": "odor and physical-attack proposals only; queueing, dependency transfers, cache state, acceptance and final selection remain governed by the exact common evaluator",
+                "categorical_move": "domain-valid logarithmic global and 1-to-4-coordinate local neighborhoods; provider IDs are never treated as continuous coordinates",
+                "survival": "elitist parent/archive pool with exact objective-evaluation accounting",
+                "article_exact": False,
+            },
+            "cpo_ablations": {
+                "dcpo_base": "four categorical defenses plus CPR; no structural/cache/model/memory guidance",
+                "dcpo_criticality": "base plus structural DAG criticality only",
+                "dcpo_cache": "base plus capacity-feasible cache coupling only",
+                "comparison_contract": "same objective, scenario, repair, initialization family, seed, population and NFE budget as DCC-DCPO",
             },
         },
         "declared_limitations": [
