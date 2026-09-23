@@ -4,7 +4,8 @@ import random
 from typing import Dict, List, Tuple
 
 from parameter.services import load_params_obj
-from .dcsga_core import mutate_provider_map
+from algorithm.greedy_nests import _providers
+from .search import mutate_provider_map
 
 params = load_params_obj()
 levy_lambda = params.levy_lambda
@@ -16,17 +17,6 @@ def nest_to_dict(nest: List[Tuple[int, int, int]]) -> Dict:
 
 def dict_to_nest(X: Dict, task_list: List[int]) -> List[Tuple[int, int, int]]:
     return [(i, X[i]["provider"], X[i]["rank"]) for i in task_list]
-
-
-def _providers(ctx) -> List[int]:
-    if isinstance(ctx.get("providers"), dict):
-        providers = list(ctx["providers"].keys())
-    else:
-        providers = list(ctx.get("sp_cpu_freq", {}).keys())
-
-    if ctx.get("v2i_only", False):
-        return [int(sp) for sp in providers if ctx.get("sp_types", {}).get(sp) == "rsu"]
-    return [int(sp) for sp in providers]
 
 
 def _mode(ctx, sp_id: int) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import math
 import random
+from algorithm.optimizer_common import assignment_key
 
 from .initial_population import create_initial_population, create_random_solution
 from .memory import ServiceAffinityMemory
@@ -29,16 +30,8 @@ class _EvaluationBudgetReached(RuntimeError):
     """Internal control-flow signal; never escapes a successful optimizer run."""
 
 
-def _solution_key(solution):
-    return tuple(
-        (int(gene[0]), int(gene[1]))
-        for gene in solution
-        if isinstance(gene, (tuple, list)) and len(gene) >= 2
-    )
-
-
 def _population_diversity_metrics(population):
-    signatures = [_solution_key(solution) for solution in population]
+    signatures = [assignment_key(solution) for solution in population]
     signatures = [signature for signature in signatures if signature]
     if not signatures:
         return {"population_unique_count": 0, "population_mean_hamming": 0.0}
@@ -65,7 +58,7 @@ def _deduplicate_ranked(rows):
     result = []
     seen = set()
     for solution, score in sorted(rows, key=lambda item: float(item[1]), reverse=True):
-        key = _solution_key(solution)
+        key = assignment_key(solution)
         if not key or key in seen:
             continue
         seen.add(key)
@@ -83,10 +76,10 @@ def _local_pharaoh_candidate(
             result, context, rng, memory,
             probability=1.0, exploration_floor=0.10,
         )
-        if _solution_key(learned) != _solution_key(result):
+        if assignment_key(learned) != assignment_key(result):
             return context.repair_solution(learned)
         guided = cache_aware_mutation(result, context, rng, probability=1.0)
-        if _solution_key(guided) != _solution_key(result):
+        if assignment_key(guided) != assignment_key(result):
             return context.repair_solution(guided)
     mutable = []
     for index, (task, provider, _position) in enumerate(result):
@@ -135,7 +128,7 @@ def _restart_from_pharaoh(
             probability=0.65, exploration_floor=0.35,
         )
     candidate = context.repair_solution(candidate)
-    if _solution_key(candidate) == _solution_key(pharaoh):
+    if assignment_key(candidate) == assignment_key(pharaoh):
         candidate = _local_pharaoh_candidate(
             pharaoh, context, rng, memory,
             problem_guidance=problem_guidance,
@@ -197,7 +190,7 @@ def run_gpc(
     seen = set()
     for raw in raw_population:
         solution = context.repair_solution(raw)
-        key = _solution_key(solution)
+        key = assignment_key(solution)
         if key and key not in seen:
             seen.add(key)
             population.append(solution)
@@ -207,7 +200,7 @@ def run_gpc(
     while len(population) < size and attempts < size * 50:
         attempts += 1
         solution = create_random_solution(context, rng)
-        key = _solution_key(solution)
+        key = assignment_key(solution)
         if key and key not in seen:
             seen.add(key)
             population.append(solution)
@@ -231,7 +224,7 @@ def run_gpc(
     def evaluate(solution):
         nonlocal function_evaluations_total
         repaired = context.repair_solution(solution)
-        key = _solution_key(repaired)
+        key = assignment_key(repaired)
         if key not in evaluation_cache:
             if (
                 evaluation_budget is not None
@@ -440,7 +433,7 @@ def run_gpc(
             restart_count = max(1, int(math.ceil(size * RESTART_FRACTION)))
             pool = pool[: max(1, size - restart_count)]
 
-        pool_keys = {_solution_key(solution) for solution, _score in pool}
+        pool_keys = {assignment_key(solution) for solution, _score in pool}
         fill_attempts = 0
         while len(pool) < size and fill_attempts < size * 50:
             fill_attempts += 1
@@ -452,7 +445,7 @@ def run_gpc(
                 service_memory,
                 problem_guidance=problem_guidance,
             )
-            key = _solution_key(replacement)
+            key = assignment_key(replacement)
             if not key or key in pool_keys:
                 continue
             try:

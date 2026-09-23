@@ -25,9 +25,9 @@ from run.benchmark.search import run_joint_dcsga
 
 from system.build_context import MiniSystemContextBuilder
 
-from algorithm.main_dcsga import (
+from algorithm.optimizer_common import (
     AlgorithmCancelled,
-    dcsga_run,
+    compute_task_ranks_and_order,
     evaluate_solution_quality,
 )
 from algorithm.greedy_nests import rate
@@ -589,11 +589,10 @@ class RSUWorker(threading.Thread):
                         snapshot_time_step,
                     )
 
+                    from algorithm.cuckoo.core import dcsga_run
+
                     best_solution, quality, cache_state = dcsga_run(ctx)
-
-                    from algorithm.main_dcsga import dcsga_compute_ranks_and_order
-
-                    task_order = dcsga_compute_ranks_and_order(ctx)
+                    task_order = compute_task_ranks_and_order(ctx)
 
                     # ``ctx`` contains ``cancel_event`` (a threading.Event).
                     # The final evaluator deep-copies its input, while Python

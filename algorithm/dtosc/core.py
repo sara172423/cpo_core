@@ -5,12 +5,12 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from .main_dcsga import (
-    _materialize_solution,
-    _refresh_algorithm_params,
-    dcsga_compute_ranks_and_order,
+from algorithm.optimizer_common import (
+    compute_task_ranks_and_order,
+    materialize_solution,
+    refresh_shared_parameters,
 )
-from .greedy_nests import (
+from algorithm.greedy_nests import (
     _apply_assignment,
     _apply_entry_task,
     _empty_state,
@@ -19,7 +19,7 @@ from .greedy_nests import (
     compute_Q,
     compute_Q1,
 )
-from .update_service_cache import update_cache
+from algorithm.update_service_cache import update_cache
 
 
 Nest = List[Tuple[int, int, int]]
@@ -249,7 +249,7 @@ def _build_dtosc_solution(ctx, task_order: List[int]) -> Nest:
 def dtosc_run(ctx):
     """Run the complete local/MEC DTOSC dynamic-programming baseline."""
 
-    _refresh_algorithm_params()
+    refresh_shared_parameters()
     seed = ctx.get("seed")
     if seed is not None:
         # The DP is deterministic; seeding is retained for interface
@@ -265,6 +265,6 @@ def dtosc_run(ctx):
     work_ctx["baseline_algorithm"] = "dtosc"
     work_ctx["dtosc_solver"] = "semi-distributed-stage-dynamic-programming"
 
-    task_order = dcsga_compute_ranks_and_order(work_ctx)
+    task_order = compute_task_ranks_and_order(work_ctx)
     nest = _build_dtosc_solution(work_ctx, task_order)
-    return _materialize_solution(work_ctx, nest, task_order)
+    return materialize_solution(work_ctx, nest, task_order)

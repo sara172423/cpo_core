@@ -15,10 +15,6 @@ def _copy_gene(gene):
     return (int(gene[0]), int(gene[1]), int(gene[2]))
 
 
-def _valid_providers(context, task):
-    return list(dict.fromkeys(int(value) for value in context.valid_provider(int(task))))
-
-
 def _rank_map(context):
     for key in ("task_rank", "global_ranks"):
         values = context.get(key)
@@ -116,7 +112,7 @@ def physical_gpc_move(
     changed = 0
     for index in selected:
         task, current, position = result[index]
-        domain = _valid_providers(context, int(task))
+        domain = [int(value) for value in context.valid_provider(int(task))]
         if not domain:
             continue
         leader = pharaoh_map.get(int(task))
@@ -171,7 +167,7 @@ def rank_guided_discrete_mutation(
     rank_map = _rank_map(context) if bool(rank_guided) else {}
 
     def providers(task):
-        return _valid_providers(context, int(task))
+        return [int(value) for value in context.valid_provider(int(task))]
 
     candidates = []
     for index, gene in enumerate(result):
@@ -246,7 +242,7 @@ def adaptive_levy_escape(solution, context, rng, stagnation_count, probability=0
 
     for idx in positions:
         task, provider, pos = result[idx]
-        providers = _valid_providers(context, int(task))
+        providers = [int(value) for value in context.valid_provider(int(task))]
 
         alternatives = [int(p) for p in providers if int(p) != int(provider)]
         if alternatives:
@@ -285,7 +281,7 @@ def cache_aware_mutation(solution, context, rng, probability=0.1):
         task, provider, _pos = gene
         domain = [
             int(value)
-            for value in _valid_providers(context, int(task))
+            for value in context.valid_provider(int(task))
             if int(value) != int(provider)
         ]
         hinted = cache_hint.get(int(task), cache_hint.get(str(int(task))))
@@ -345,7 +341,11 @@ def success_memory_mutation(
     span = max(1e-12, hi - lo)
     choices = []
     for index, (task, provider, _position) in enumerate(result):
-        alternatives = [int(p) for p in _valid_providers(context, task) if int(p) != provider]
+        alternatives = [
+            int(value)
+            for value in context.valid_provider(int(task))
+            if int(value) != provider
+        ]
         if not alternatives:
             continue
         importance = (float(ranks.get(task, lo)) - lo) / span if rank_values else 0.5

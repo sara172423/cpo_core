@@ -3,8 +3,6 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, Optional
 
-from algorithm.dtosc import dtosc_run
-
 
 class DTOSC:
     name = "DTOSC"
@@ -26,6 +24,8 @@ class DTOSC:
         base_ctx: Dict[str, Any],
         seed: Optional[int] = None,
     ):
+        from algorithm.dtosc.core import dtosc_run
+
         if not isinstance(base_ctx, dict):
             raise TypeError("base_ctx must be a dictionary")
 

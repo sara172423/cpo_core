@@ -4,6 +4,8 @@ import math
 from functools import lru_cache
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple, TypeVar
 
+from algorithm.optimizer_common import hamming_distance
+
 NestT = TypeVar("NestT")
 ScoredNest = Tuple[NestT, float]
 
@@ -59,11 +61,7 @@ def mutate_provider_map(
     )
     new_map = dict(source)
     dimension = len(tasks)
-    hamming = (
-        dimension
-        if best is None
-        else sum(source[task_id] != best[task_id] for task_id in tasks)
-    )
+    hamming = dimension if best is None else hamming_distance(source, best)
     length = levy_step_length(hamming, dimension, levy_lambda, rng)
     quotient, remainder = divmod(length, 2)
     transformed: set[int] = set()

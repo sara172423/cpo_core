@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from statistics import mean
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from algorithm.main_dcsga import (
-    dcsga_compute_ranks_and_order,
+from algorithm.optimizer_common import (
+    compute_task_ranks_and_order,
     evaluate_solution_quality,
 )
 from algorithm.greedy_nests import (
@@ -194,7 +194,7 @@ def normalize_algorithm_output(
         seed,
     )
 
-    task_order = dcsga_compute_ranks_and_order(
+    task_order = compute_task_ranks_and_order(
         eval_ctx
     )
 

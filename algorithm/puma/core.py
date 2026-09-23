@@ -3,13 +3,12 @@ from __future__ import annotations
 import copy
 import random
 from collections import deque
+from algorithm.optimizer_common import assignment_key, hamming_distance
 
 from .initial_population import create_initial_population
 from .operators import (
     exploration_candidate,
     exploitation_candidate,
-    hamming_distance,
-    solution_key,
 )
 
 
@@ -25,7 +24,7 @@ UNEXPERIENCED_ITERATIONS = 3
 def _sort_unique(rows):
     result, seen = [], set()
     for solution, score in sorted(rows, key=lambda row: float(row[1]), reverse=True):
-        key = solution_key(solution)
+        key = assignment_key(solution)
         if key and key not in seen:
             seen.add(key)
             result.append((copy.deepcopy(solution), float(score)))
@@ -96,7 +95,7 @@ def run_puma(
     def evaluate(raw):
         nonlocal function_evaluations
         solution = context.repair_solution(raw)
-        key = solution_key(solution)
+        key = assignment_key(solution)
         if not key:
             return None
         if key not in evaluation_cache:
@@ -173,7 +172,7 @@ def run_puma(
     def run_phase(name, source_rows, target_evaluations, iteration):
         nonlocal pcr
         rows = [(copy.deepcopy(solution), float(score)) for solution, score in source_rows]
-        occupied = {solution_key(solution) for solution, _score in rows}
+        occupied = {assignment_key(solution) for solution, _score in rows}
         before_nfe = int(function_evaluations)
         old_best = max(score for _solution, score in rows)
         accepted = 0
@@ -201,7 +200,7 @@ def run_puma(
                     beta,
                     rng,
                 )
-            key = solution_key(candidate)
+            key = assignment_key(candidate)
             if not key or key in occupied:
                 continue
             result = evaluate(candidate)
@@ -209,7 +208,7 @@ def run_puma(
                 break
             solution, score = result
             if score > parent_score + 1e-12:
-                occupied.discard(solution_key(parent))
+                occupied.discard(assignment_key(parent))
                 occupied.add(key)
                 rows[parent_index] = (copy.deepcopy(solution), float(score))
                 accepted += 1

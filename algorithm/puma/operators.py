@@ -1,23 +1,7 @@
 from __future__ import annotations
 
 import math
-
-
-def solution_key(solution):
-    return tuple((int(gene[0]), int(gene[1])) for gene in solution)
-
-
-def hamming_distance(left, right):
-    left_map = {int(gene[0]): int(gene[1]) for gene in left}
-    right_map = {int(gene[0]): int(gene[1]) for gene in right}
-    return sum(
-        left_map.get(task) != right_map.get(task)
-        for task in set(left_map) | set(right_map)
-    )
-
-
-def _provider_map(solution):
-    return {int(gene[0]): int(gene[1]) for gene in solution}
+from algorithm.optimizer_common import provider_map
 
 
 def _weighted_sample(tasks, weights, count, rng):
@@ -64,7 +48,7 @@ def exploration_candidate(parent, population, context, pcr, rng):
     tasks = [int(task) for task in context.task_order]
     dimension = len(tasks)
     weights = _task_weights(context, tasks)
-    parent_map = _provider_map(parent)
+    parent_map = provider_map(parent)
     candidate = dict(parent_map)
 
     change_count = max(1, min(
@@ -73,7 +57,7 @@ def exploration_candidate(parent, population, context, pcr, rng):
     ))
     selected = _weighted_sample(tasks, weights, change_count, rng)
 
-    maps = [_provider_map(solution) for solution in population]
+    maps = [provider_map(solution) for solution in population]
     if not maps:
         maps = [parent_map]
     peers = [rng.choice(maps) for _ in range(6)]
@@ -105,9 +89,9 @@ def exploitation_candidate(parent, best, population, context, progress, q, beta,
     tasks = [int(task) for task in context.task_order]
     dimension = len(tasks)
     weights = _task_weights(context, tasks)
-    parent_map = _provider_map(parent)
-    best_map = _provider_map(best)
-    population_maps = [_provider_map(solution) for solution in population]
+    parent_map = provider_map(parent)
+    best_map = provider_map(best)
+    population_maps = [provider_map(solution) for solution in population]
     candidate = dict(parent_map)
 
     # PO's exploitation contracts over time. Beta controls the contraction and

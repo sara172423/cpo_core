@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import random
+from algorithm.optimizer_common import assignment_key, hamming_distance
 
 from .initial_population import create_initial_population
 from .memory import initialize_pheromone, update_pheromone
@@ -9,7 +10,6 @@ from .operators import (
     generate_alpha_neighborhood_children,
     generate_adaptive_children,
     generate_escape_children,
-    hamming_distance,
 )
 
 
@@ -25,19 +25,11 @@ def _set_context_flag(context, key, value):
         setattr(context, key, value)
 
 
-def _solution_key(solution):
-    return tuple(
-        (int(gene[0]), int(gene[1]))
-        for gene in solution
-        if isinstance(gene, (tuple, list)) and len(gene) >= 2
-    )
-
-
 def _sort_unique(rows):
     result = []
     seen = set()
     for solution, score in sorted(rows, key=lambda row: float(row[1]), reverse=True):
-        key = _solution_key(solution)
+        key = assignment_key(solution)
         if not key or key in seen:
             continue
         seen.add(key)
@@ -152,7 +144,7 @@ def run_gwo_aco(
             solution = context.repair_solution(raw)
             if not solution:
                 continue
-            key = _solution_key(solution)
+            key = assignment_key(solution)
             if key not in evaluation_cache:
                 if (
                     evaluation_budget is not None

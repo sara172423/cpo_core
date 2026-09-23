@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import random
+from algorithm.optimizer_common import assignment_key
 
 
 GREEDY_RATIO = 0.0
-
-
-def _key(solution):
-    return tuple((int(gene[0]), int(gene[1])) for gene in solution)
 
 
 def create_initial_population(context, size: int, rng=None):
@@ -37,7 +34,7 @@ def create_initial_population(context, size: int, rng=None):
 
     def append(raw):
         candidate = context.repair_solution(raw)
-        key = _key(candidate)
+        key = assignment_key(candidate)
         if key and key not in seen:
             seen.add(key)
             population.append(candidate)

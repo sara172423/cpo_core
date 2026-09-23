@@ -16,9 +16,9 @@ class StandaloneOptimizerContext(dict):
             self["seed"] = int(seed)
         order = self.get("task_order") or self.get("ranked_task_ids")
         if not order:
-            from algorithm.main_dcsga import dcsga_compute_ranks_and_order
+            from algorithm.optimizer_common import compute_task_ranks_and_order
 
-            order = dcsga_compute_ranks_and_order(self)
+            order = compute_task_ranks_and_order(self)
         self["task_order"] = [int(value) for value in order]
         self.setdefault("initial_evaluation_memo", {})
 
@@ -69,7 +69,7 @@ class StandaloneOptimizerContext(dict):
         )
 
     def evaluate(self, solution):
-        from algorithm.main_dcsga import evaluate_solution_quality
+        from algorithm.optimizer_common import evaluate_solution_quality
 
         result = evaluate_solution_quality(self, solution, self.task_order)
         return float(result[0] if isinstance(result, tuple) else result)

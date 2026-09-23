@@ -3,8 +3,6 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, Optional
 
-from algorithm.main_dcsga import dcsga_run
-
 
 class TO_WO_C:
     name = "TO_WO_C"
@@ -15,6 +13,8 @@ class TO_WO_C:
         base_ctx: Dict[str, Any],
         seed: Optional[int] = None,
     ):
+        from algorithm.cuckoo.core import dcsga_run
+
         if not isinstance(base_ctx, dict):
             raise TypeError("base_ctx must be a dictionary")
 

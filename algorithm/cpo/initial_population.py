@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from algorithm.optimizer_common import assignment_key
 
 
 GREEDY_RATIO = 0.75
@@ -24,11 +25,15 @@ def create_initial_population(context, size: int, rng=None):
         raise RuntimeError("CPO greedy initialization returned no solution")
 
     diverse_count = size - greedy_count
+    domains = {}
     provider_plans = {}
     for task in tasks:
-        providers = list(dict.fromkeys(context.valid_provider(task)))
+        providers = list(
+            dict.fromkeys(int(value) for value in context.valid_provider(task))
+        )
         if not providers:
             raise ValueError(f"Task {task} has no valid provider")
+        domains[task] = providers
         quotient, remainder = divmod(diverse_count, len(providers))
         choices = [provider for provider in providers for _ in range(quotient)]
         extra = list(providers)
@@ -51,7 +56,7 @@ def create_initial_population(context, size: int, rng=None):
     seen = set()
 
     def append(candidate):
-        key = tuple((int(gene[0]), int(gene[1])) for gene in candidate)
+        key = assignment_key(candidate)
         if key and key not in seen:
             seen.add(key)
             population.append(candidate)
@@ -68,7 +73,7 @@ def create_initial_population(context, size: int, rng=None):
         append(
             context.repair_solution(
                 [
-                    (task, int(rng.choice(context.valid_provider(task))), position)
+                    (task, int(rng.choice(domains[task])), position)
                     for position, task in enumerate(tasks)
                 ]
             )

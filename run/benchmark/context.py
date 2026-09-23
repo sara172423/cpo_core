@@ -11,7 +11,7 @@ from django.db.models import Q
 
 from monarch_pylib.model import transmission
 
-from algorithm.main_dcsga import compute_local_ranks
+from algorithm.optimizer_common import compute_local_ranks
 from application.models import Application
 from dag.models import ApplicationType, Task
 from object.models import RSUVehicle, ServiceProvider, Vehicle

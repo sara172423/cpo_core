@@ -4,6 +4,7 @@ import copy
 import math
 import random
 from typing import Sequence
+from algorithm.optimizer_common import hamming_distance, provider_map
 
 from .predictive_cache import (
     DEFAULT_PROVIDER_GUIDANCE_WEIGHT,
@@ -40,18 +41,6 @@ def _provider_guidance_weight(context) -> float:
         return float(DEFAULT_PROVIDER_GUIDANCE_WEIGHT)
 
 
-def _valid_providers(context, task: int) -> list[int]:
-    return list(dict.fromkeys(int(value) for value in context.valid_provider(int(task))))
-
-
-def _provider_map(solution: Sequence) -> dict[int, int]:
-    return {
-        int(gene[0]): int(gene[1])
-        for gene in solution
-        if isinstance(gene, (tuple, list)) and len(gene) >= 2
-    }
-
-
 def _get_task_ranks(context) -> dict[int, float]:
     """Use the canonical rank provided by build_context."""
     if not _context_flag(context, "gwo_rank_guidance", False):
@@ -75,13 +64,6 @@ def _rank_weight(task, task_ranks):
         0.0,
         min(1.0, (float(task_ranks.get(int(task), lo)) - lo) / (hi - lo)),
     )
-
-
-def hamming_distance(solution_a: Sequence, solution_b: Sequence) -> int:
-    a = _provider_map(solution_a)
-    b = _provider_map(solution_b)
-    tasks = set(a) | set(b)
-    return sum(a.get(task) != b.get(task) for task in tasks)
 
 
 def _leader_provider(leader: Sequence, task: int) -> int | None:
@@ -175,7 +157,7 @@ def generate_alpha_neighborhood_children(
     if not alpha or count <= 0:
         return []
     beta, delta = beta or alpha, delta or alpha
-    alpha_map = _provider_map(alpha)
+    alpha_map = provider_map(alpha)
     future_index = (
         build_provider_future_index(context, alpha_map)
         if _context_flag(context, "gwo_cache_guidance", False)
@@ -188,7 +170,11 @@ def generate_alpha_neighborhood_children(
     mutable = []
     for index, gene in enumerate(alpha):
         task, provider = int(gene[0]), int(gene[1])
-        alternatives = [int(p) for p in _valid_providers(context, task) if int(p) != provider]
+        alternatives = [
+            int(value)
+            for value in context.valid_provider(int(task))
+            if int(value) != provider
+        ]
         if not alternatives:
             continue
         importance = (float(task_ranks.get(task, rank_lo)) - rank_lo) / rank_span if rank_values else 0.5
@@ -233,10 +219,10 @@ def generate_alpha_neighborhood_children(
 
 
 def _select_tasks(source, alpha, beta, delta, budget: int, task_ranks, rng) -> list[int]:
-    source_map = _provider_map(source)
-    alpha_map = _provider_map(alpha)
-    beta_map = _provider_map(beta)
-    delta_map = _provider_map(delta)
+    source_map = provider_map(source)
+    alpha_map = provider_map(alpha)
+    beta_map = provider_map(beta)
+    delta_map = provider_map(delta)
 
     weights: dict[int, float] = {}
     for task, current in source_map.items():
@@ -300,7 +286,7 @@ def _choose_provider(
     a: float,
     rng: random.Random,
 ) -> int:
-    domain = _valid_providers(context, int(task))
+    domain = [int(value) for value in context.valid_provider(int(task))]
     if not domain:
         return int(current)
 
@@ -372,7 +358,7 @@ def discrete_adaptive_move(
         return []
 
     source = [(int(g[0]), int(g[1]), index) for index, g in enumerate(current)]
-    source_map = _provider_map(source)
+    source_map = provider_map(source)
     future_index = (
         build_provider_future_index(context, source_map)
         if _context_flag(context, "gwo_cache_guidance", False)
@@ -478,7 +464,7 @@ def generate_escape_children(
             task, current_provider, _ = source[position]
             alternatives = [
                 int(provider)
-                for provider in _valid_providers(context, int(task))
+                for provider in context.valid_provider(int(task))
                 if int(provider) != int(current_provider)
             ]
             if alternatives:

@@ -1,29 +1,12 @@
 from __future__ import annotations
 
 import math
+from algorithm.optimizer_common import assignment_key, provider_map
 
 
 DEFENSE_EXPLORATION = ("sight", "sound")
 DEFENSE_EXPLOITATION = ("odor", "physical_attack")
 DEFENSE_NAMES = DEFENSE_EXPLORATION + DEFENSE_EXPLOITATION
-
-
-def solution_key(solution):
-    return tuple(
-        (int(gene[0]), int(gene[1]))
-        for gene in solution or []
-        if isinstance(gene, (tuple, list)) and len(gene) >= 2
-    )
-
-
-def provider_map(solution):
-    return dict(solution_key(solution))
-
-
-def valid_providers(context, task: int) -> list[int]:
-    return list(
-        dict.fromkeys(int(value) for value in context.valid_provider(int(task)))
-    )
 
 
 def _energy_opportunity(context, task):
@@ -103,12 +86,6 @@ def _criticality_weights(context, tasks):
             for task in values
         }
     return structural
-
-
-def hamming_distance(left, right):
-    a, b = provider_map(left), provider_map(right)
-    tasks = set(a) | set(b)
-    return sum(a.get(task) != b.get(task) for task in tasks)
 
 
 def _weighted_sample_without_replacement(weighted_items, count, rng):
@@ -209,12 +186,16 @@ def _choose_model_guided_provider(
 
 
 def _force_change(candidate, reference, context, rng, memory=None):
-    if solution_key(candidate) != solution_key(reference):
+    if assignment_key(candidate) != assignment_key(reference):
         return context.repair_solution(candidate)
     child = [tuple(int(value) for value in gene[:3]) for gene in reference]
     mutable = []
     for index, (task, provider, _position) in enumerate(child):
-        alternatives = [value for value in valid_providers(context, task) if value != provider]
+        alternatives = [
+            int(value)
+            for value in context.valid_provider(int(task))
+            if int(value) != provider
+        ]
         if alternatives:
             mutable.append((index, task, alternatives))
     if not mutable:
@@ -290,7 +271,7 @@ def sight_defense(current, best, peer, context, progress, rng, memory=None):
     index_by_task = {int(gene[0]): index for index, gene in enumerate(child)}
     for task in tasks:
         current_provider = current_map[task]
-        domain = valid_providers(context, task)
+        domain = [int(value) for value in context.valid_provider(int(task))]
         suggested = [
             provider for provider in (peer_map.get(task), best_map.get(task))
             if provider in domain and provider != current_provider
@@ -318,7 +299,7 @@ def sound_defense(current, best, peer_a, peer_b, context, progress, rng, memory=
     )
     index_by_task = {int(gene[0]): index for index, gene in enumerate(child)}
     for task in tasks:
-        domain = valid_providers(context, task)
+        domain = [int(value) for value in context.valid_provider(int(task))]
         candidates = [
             mapping.get(task) for mapping in maps
             if mapping.get(task) in domain and mapping.get(task) != current_map[task]
@@ -400,7 +381,7 @@ def odor_defense(current, best, context, progress, rng, memory=None, elite_maps=
     selected_anchor_provider = None
     for task in tasks:
         current_provider = current_map[task]
-        domain = valid_providers(context, task)
+        domain = [int(value) for value in context.valid_provider(int(task))]
         elite_provider = best_map.get(task)
         shared_target = (
             selected_anchor_provider
@@ -475,7 +456,7 @@ def physical_attack(current, best, context, progress, rng, memory=None, elite_ma
     rank = _criticality_weights(context, [int(gene[0]) for gene in child])
     mutable = []
     for index, (task, provider, _position) in enumerate(child):
-        domain = valid_providers(context, task)
+        domain = [int(value) for value in context.valid_provider(int(task))]
         alternatives = [value for value in domain if value != provider]
         if alternatives:
             disagreement = _elite_disagreement(
@@ -567,18 +548,25 @@ def build_defense_schedule(count, progress, stagnation, memory, rng):
     return schedule
 
 
-def generate_candidate(strategy, current, best, population, context, progress, rng, memory=None):
-    peers = [solution for solution in population if solution_key(solution) != solution_key(current)]
-    peer_a = rng.choice(peers or population)
-    peer_b = rng.choice(peers or population)
+def generate_candidate(
+    strategy,
+    current,
+    best,
+    peers,
+    context,
+    progress,
+    rng,
+    memory=None,
+    elite_maps=None,
+):
+    peer_a = rng.choice(peers)
+    peer_b = rng.choice(peers)
     if strategy == "sight":
         return sight_defense(current, best, peer_a, context, progress, rng, memory)
     if strategy == "sound":
         return sound_defense(current, best, peer_a, peer_b, context, progress, rng, memory)
     if strategy == "odor":
-        elite_maps = [provider_map(solution) for solution in list(population or [])[:8]]
         return odor_defense(current, best, context, progress, rng, memory, elite_maps)
     if strategy == "physical_attack":
-        elite_maps = [provider_map(solution) for solution in list(population or [])[:8]]
         return physical_attack(current, best, context, progress, rng, memory, elite_maps)
     raise ValueError(f"Unknown CPO defense strategy: {strategy}")

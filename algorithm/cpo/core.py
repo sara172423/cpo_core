@@ -1,17 +1,14 @@
 from __future__ import annotations
-
 import copy
 import math
 import random
-
+from algorithm.optimizer_common import assignment_key, hamming_distance, provider_map
 from .initial_population import create_initial_population
 from .memory import DefenseSuccessMemory
 from .operators import (
     build_defense_schedule,
     choose_defense,
     generate_candidate,
-    hamming_distance,
-    solution_key,
 )
 
 
@@ -24,7 +21,7 @@ RESTART_FRACTION = 0.15
 def _sort_unique(rows):
     result, seen = [], set()
     for solution, score in sorted(rows, key=lambda row: float(row[1]), reverse=True):
-        key = solution_key(solution)
+        key = assignment_key(solution)
         if not key or key in seen:
             continue
         seen.add(key)
@@ -121,7 +118,7 @@ def run_cpo(
     population, seen = [], set()
     for raw in raw_population:
         solution = context.repair_solution(raw)
-        key = solution_key(solution)
+        key = assignment_key(solution)
         if key and key not in seen:
             seen.add(key)
             population.append(solution)
@@ -139,7 +136,7 @@ def run_cpo(
     def evaluate(raw):
         nonlocal function_evaluations
         solution = context.repair_solution(raw)
-        key = solution_key(solution)
+        key = assignment_key(solution)
         if not key:
             return None
         if key not in evaluation_cache:
@@ -231,6 +228,8 @@ def run_cpo(
             memory.begin_generation()
         current_rows = list(evaluated)
         current_population = [solution for solution, _score in current_rows]
+        current_keys = [assignment_key(solution) for solution in current_population]
+        elite_maps = [provider_map(solution) for solution in current_population[:8]]
         # CPR changes the number of porcupines that move, while a reservoir is
         # retained so a new cycle can restore population size without losing
         # already paid objective evaluations.
@@ -277,6 +276,12 @@ def run_cpo(
             parent_index = active_indices[cursor % len(active_indices)]
             cursor += 1
             parent, parent_score = current_rows[parent_index]
+            parent_key = current_keys[parent_index]
+            peers = [
+                solution
+                for solution, key in zip(current_population, current_keys)
+                if key != parent_key
+            ]
             stagnation_escape = (
                 stagnation >= max(1, int(stagnation_restart_after))
                 and rng.random() < min(0.50, float(restart_fraction))
@@ -296,11 +301,12 @@ def run_cpo(
                 strategy,
                 parent,
                 best_solution,
-                current_population,
+                peers or current_population,
                 context,
                 progress,
                 rng,
                 memory,
+                elite_maps,
             )
             previous_nfe = function_evaluations
             row = evaluate(candidate)
@@ -312,7 +318,7 @@ def run_cpo(
             child, child_score = row
             if child_score > float(parent_score) + 1e-12:
                 improvement_records.append(
-                    (solution_key(child), strategy, child, parent, child_score - float(parent_score))
+                    (assignment_key(child), strategy, child, parent, child_score - float(parent_score))
                 )
             candidate_rows.append((child, child_score))
 
@@ -321,7 +327,7 @@ def run_cpo(
         if len(selection_pool) < size:
             raise RuntimeError("CPO selection lost feasible population diversity")
         evaluated = selection_pool[:size]
-        surviving_keys = {solution_key(solution) for solution, _score in evaluated}
+        surviving_keys = {assignment_key(solution) for solution, _score in evaluated}
         for key, strategy, child, parent, gain in improvement_records:
             if key not in surviving_keys:
                 continue

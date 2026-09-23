@@ -5,8 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from parameter.services import load_params_obj
-from algorithm.main_dcsga import compute_global_ranks, compute_local_ranks
-from algorithm.dcsga_core import mutate_provider_map, run_population_search
+from algorithm.optimizer_common import compute_global_ranks, compute_local_ranks
 
 from .evaluator import (
     JointEvaluation,
@@ -425,8 +424,14 @@ def generate_new_solution(
     levy_lambda: float,
     rng: random.Random,
     search_cache: _SearchStaticCache | None = None,
+    mutation_kernel=None,
 ) -> List[NestItem]:
     """Joint-benchmark adapter for the shared canonical Procedure 3 kernel."""
+    if mutation_kernel is None:
+        from algorithm.cuckoo.search import mutate_provider_map
+
+        mutation_kernel = mutate_provider_map
+
     task_order = [int(task_id) for task_id, _provider_id, _rank in source_nest]
     source = {
         int(task_id): int(provider_id)
@@ -441,7 +446,7 @@ def generate_new_solution(
         else None
     )
 
-    provider_map = mutate_provider_map(
+    provider_map = mutation_kernel(
         task_order,
         source,
         best,
@@ -697,6 +702,11 @@ def run_joint_dcsga(
     population_size: int | None = None,
     max_function_evaluations: int | None = None,
 ) -> Tuple[List[NestItem], JointEvaluation, List[Dict[str, Any]]]:
+    from algorithm.cuckoo.search import (
+        mutate_provider_map,
+        run_population_search,
+    )
+
     _prepare_joint_context_seed(joint_ctx, seed)
     scheme = get_joint_scheme(algorithm)
     if scheme.use_ranking:
@@ -762,6 +772,7 @@ def run_joint_dcsga(
             levy_lambda=levy_lambda,
             rng=rng,
             search_cache=search_cache,
+            mutation_kernel=mutate_provider_map,
         )
 
     def record_history(iteration, evaluated):
