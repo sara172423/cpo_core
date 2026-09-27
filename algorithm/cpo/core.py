@@ -2,7 +2,13 @@ from __future__ import annotations
 import copy
 import math
 import random
-from algorithm.optimizer_common import assignment_key, hamming_distance, provider_map
+from algorithm.optimizer_common import (
+    ObjectiveEvaluationProtocol,
+    assignment_key,
+    hamming_distance,
+    normalized_search_progress,
+    provider_map,
+)
 from .initial_population import create_initial_population
 from .memory import DefenseSuccessMemory
 from .operators import (
@@ -39,15 +45,6 @@ def _mean_hamming(rows):
         for right in range(left + 1, len(rows))
     ]
     return float(sum(distances) / len(distances)) if distances else 0.0
-
-
-def _search_progress(function_evaluations, initial_evaluations, budget, iteration, iterations):
-    """Measure optimizer stage by paid NFE when a fair budget is active."""
-    if budget is not None and int(budget) > int(initial_evaluations):
-        used = max(0, int(function_evaluations) - int(initial_evaluations))
-        available = max(1, int(budget) - int(initial_evaluations))
-        return max(0.0, min(1.0, float(used) / float(available)))
-    return max(0.0, min(1.0, float(iteration) / float(max(1, iterations))))
 
 
 def _cyclic_active_size_at_progress(progress, initial_size, minimum_ratio, cycles):
@@ -87,15 +84,6 @@ def run_cpo(
     deadline_guidance=True,
     max_function_evaluations=None,
 ):
-    """Run the discrete CPO family in the task-provider search space.
-
-    The four defensive mechanisms and cyclic population reduction are retained
-    from CPO.  Continuous displacements are replaced by domain-valid
-    categorical neighborhoods; this is explicitly an adapted algorithm, not a
-    source-exact continuous CPO implementation.  The four guidance switches
-    define reproducible ablations of the proposed method; none changes the
-    objective, feasibility rules, repair operator, or evaluation budget.
-    """
     context = copy.deepcopy(context)
     context["cpo_criticality_guidance"] = bool(criticality_guidance)
     context["cpo_cache_coupling"] = bool(cache_coupling)
@@ -108,12 +96,6 @@ def run_cpo(
     rng = random.Random(seed)
     size = max(2, int(population_size))
     iterations = max(0, int(iterations))
-    budget = None if max_function_evaluations is None else max(1, int(max_function_evaluations))
-    if budget is not None and budget < size:
-        raise ValueError(
-            "max_function_evaluations must be at least population_size so the initial population can be evaluated"
-        )
-
     raw_population = list(initial_population or create_initial_population(context, size, rng))
     population, seen = [], set()
     for raw in raw_population:
@@ -127,30 +109,23 @@ def run_cpo(
     if len(population) < size:
         raise RuntimeError(f"Initial CPO population has {len(population)} unique solutions; expected {size}")
 
-    initial_memo = context.get("initial_evaluation_memo", {}) or {}
-    evaluation_cache = {key: float(value) for key, value in initial_memo.items()}
-    function_evaluations = max(
-        len(evaluation_cache), int(context.initial_function_evaluations or 0)
+    evaluations = ObjectiveEvaluationProtocol(
+        context,
+        population_size=size,
+        max_function_evaluations=max_function_evaluations,
     )
-
-    def evaluate(raw):
-        nonlocal function_evaluations
-        solution = context.repair_solution(raw)
-        key = assignment_key(solution)
-        if not key:
-            return None
-        if key not in evaluation_cache:
-            if budget is not None and function_evaluations >= budget:
-                return None
-            evaluation_cache[key] = float(context.evaluate_solution(solution))
-            function_evaluations += 1
-        return solution, float(evaluation_cache[key])
-
-    evaluated = _sort_unique(row for row in (evaluate(solution) for solution in population) if row)
+    budget = evaluations.budget
+    evaluated = _sort_unique(
+        (result.solution, result.score)
+        for result in (
+            evaluations.try_evaluate(solution) for solution in population
+        )
+        if result is not None
+    )
     if len(evaluated) < size:
         raise RuntimeError(f"CPO initialization produced {len(evaluated)} evaluated solutions; expected {size}")
     evaluated = evaluated[:size]
-    initial_function_evaluations = int(function_evaluations)
+    initial_function_evaluations = int(evaluations.count)
     best_solution, best_score = copy.deepcopy(evaluated[0][0]), float(evaluated[0][1])
     memory = (
         DefenseSuccessMemory(
@@ -205,21 +180,21 @@ def run_cpo(
                 "success_memory": bool(success_memory),
                 "model_guidance": bool(model_guidance),
                 "defense_trials": dict(strategy_counts or {}),
-                "function_evaluations": int(function_evaluations),
+                "function_evaluations": int(evaluations.count),
                 **profile,
             }
         )
 
     record(0, size)
     for iteration in range(1, iterations + 1):
-        if budget is not None and function_evaluations >= budget:
+        if evaluations.exhausted:
             break
-        progress = _search_progress(
-            function_evaluations,
-            initial_function_evaluations,
-            budget,
-            iteration - 1,
-            iterations,
+        progress = normalized_search_progress(
+            function_evaluations=evaluations.count,
+            initial_evaluations=initial_function_evaluations,
+            budget=budget,
+            iteration=iteration - 1,
+            iterations=iterations,
         )
         active_size = _cyclic_active_size_at_progress(
             progress, size, cpr_minimum_ratio, cpr_cycles
@@ -256,7 +231,7 @@ def run_cpo(
         }
         target_new_evaluations = min(
             active_size,
-            (budget - function_evaluations) if budget is not None else active_size,
+            evaluations.remaining if budget is not None else active_size,
         )
         defense_schedule = build_defense_schedule(
             target_new_evaluations,
@@ -265,11 +240,11 @@ def run_cpo(
             memory,
             rng,
         )
-        new_evaluations_before = function_evaluations
+        new_evaluations_before = evaluations.count
         max_attempts = max(active_size * 10, target_new_evaluations * 12)
         cursor = 0
         while (
-            function_evaluations - new_evaluations_before < target_new_evaluations
+            evaluations.count - new_evaluations_before < target_new_evaluations
             and attempts < max_attempts
         ):
             attempts += 1
@@ -290,7 +265,7 @@ def run_cpo(
                 strategy = "sight"
                 strategy_counts["stagnation_escape"] += 1
             else:
-                completed = function_evaluations - new_evaluations_before
+                completed = evaluations.count - new_evaluations_before
                 strategy = (
                     defense_schedule[completed]
                     if completed < len(defense_schedule)
@@ -308,14 +283,13 @@ def run_cpo(
                 memory,
                 elite_maps,
             )
-            previous_nfe = function_evaluations
-            row = evaluate(candidate)
-            if row is None:
+            result = evaluations.try_evaluate(candidate)
+            if result is None:
                 break
-            if function_evaluations == previous_nfe:
+            if not result.is_new:
                 continue
             generated += 1
-            child, child_score = row
+            child, child_score = result.solution, result.score
             if child_score > float(parent_score) + 1e-12:
                 improvement_records.append(
                     (assignment_key(child), strategy, child, parent, child_score - float(parent_score))
@@ -338,12 +312,12 @@ def run_cpo(
             best_solution = copy.deepcopy(evaluated[0][0])
             best_score = float(evaluated[0][1])
         stagnation = 0 if best_score > previous_best + 1e-12 else stagnation + 1
-        end_progress = _search_progress(
-            function_evaluations,
-            initial_function_evaluations,
-            budget,
-            iteration,
-            iterations,
+        end_progress = normalized_search_progress(
+            function_evaluations=evaluations.count,
+            initial_evaluations=initial_function_evaluations,
+            budget=budget,
+            iteration=iteration,
+            iterations=iterations,
         )
         record(
             iteration,

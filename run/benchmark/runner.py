@@ -12,7 +12,6 @@ from uuid import uuid4
 
 from django.conf import settings
 
-from application.models import Application
 from parameter.services import load_params_obj
 
 from run.baselines import (
@@ -20,13 +19,8 @@ from run.baselines import (
     PAPER_ALGORITHM_NAMES,
 )
 
-from .context import build_benchmark_context, build_joint_context, joint_context_summary
-from .evaluator import configured_context, evaluate_metrics, normalize_algorithm_output
-from .models import (
-    AlgorithmResult,
-    ApplicationResult,
-    JointAlgorithmResult,
-)
+from .context import joint_context_summary
+from .contracts import JointAlgorithmResult
 
 
 ALGORITHMS = JOINT_BENCHMARK_ALGORITHMS
@@ -109,15 +103,6 @@ def _unique_names(values: Iterable[str]) -> List[str]:
     return list(dict.fromkeys(str(value).strip().lower() for value in values))
 
 
-def _validate_application_ids(application_ids: List[int]) -> None:
-    existing = set(
-        Application.objects.filter(id__in=application_ids).values_list("id", flat=True)
-    )
-    missing = [app_id for app_id in application_ids if app_id not in existing]
-    if missing:
-        raise ValueError(f"Applications not found: {missing}")
-
-
 def _metric_stats(values: Sequence[float]) -> Dict[str, float]:
     numbers = [float(value) for value in values]
     if not numbers:
@@ -150,54 +135,6 @@ def _summary_row(selected: List[Dict[str, Any]]) -> Dict[str, Any]:
         result[f"{metric}_max"] = stats["max"]
     result["seed_count"] = len(selected)
     return result
-
-
-def _single_decision_rows(results: List[ApplicationResult]) -> List[Dict[str, Any]]:
-    return [
-        {
-            "application_id": item.application_id,
-            "vehicle_id": item.vehicle_id,
-            "delay": item.delay_s,
-            "energy_j": item.energy_j,
-            "q": item.efficiency,
-            "deadline_s": item.deadline_s,
-            "completed": item.completed,
-        }
-        for item in results
-    ]
-
-
-def _single_algorithm_result(
-    algorithm: str,
-    seed: int,
-    application_results: List[ApplicationResult],
-) -> AlgorithmResult:
-    metric_result = evaluate_metrics(
-        {"application_count": len(application_results)},
-        _single_decision_rows(application_results),
-    )
-    return AlgorithmResult(
-        algorithm=algorithm,
-        seed=int(seed),
-        applications=application_results,
-        metrics={
-            "avg_delay": float(metric_result.avg_delay),
-            "avg_efficiency": float(metric_result.avg_efficiency),
-            "total_efficiency": float(metric_result.total_efficiency),
-            "completion_rate": float(metric_result.completion_rate),
-        },
-        iteration_history=[],
-    )
-
-
-def _single_summary(runs: List[AlgorithmResult]) -> Dict[str, Dict[str, float]]:
-    run_rows = [run.to_dict() for run in runs]
-    summary: Dict[str, Dict[str, float]] = {}
-    for algorithm in ALGORITHMS:
-        selected = [run for run in run_rows if run["algorithm"] == algorithm]
-        if selected:
-            summary[algorithm] = _summary_row(selected)
-    return summary
 
 
 def _json_cache(cache_state: Dict[int, set[int]]) -> Dict[str, List[int]]:
@@ -534,12 +471,10 @@ def _scenario_metadata(joint_ctx: Dict[str, Any]) -> Dict[str, Any]:
 
 def _export_benchmark_result(
     result: Dict[str, Any],
-    *,
-    mode: str,
 ) -> Dict[str, Any]:
     root = Path(settings.BASE_DIR) / "benchmark_results"
     run_id = (
-        f"{mode}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_"
+        f"joint_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_"
         f"{uuid4().hex[:8]}"
     )
     output_dir = root / run_id
@@ -669,69 +604,6 @@ def _export_benchmark_result(
             "figures": [],
             "warnings": [f"Benchmark export failed: {exc}"],
         }
-
-
-def run_benchmark(
-    application_ids: Iterable[int],
-    algorithms: Iterable[str] | None = None,
-    seeds: Iterable[int] | None = None,
-    tmax: int = 10,
-    export_artifacts: bool = True,
-) -> Dict[str, Any]:
-    application_ids = _unique_ints(application_ids)
-    algorithm_names = _unique_names(algorithms or ALGORITHMS.keys())
-    seed_values = _unique_ints(seeds or [1])
-
-    if not application_ids:
-        raise ValueError("At least one application_id is required")
-    if not algorithm_names:
-        raise ValueError("At least one algorithm is required")
-    if not seed_values:
-        raise ValueError("At least one seed is required")
-
-    unknown = [name for name in algorithm_names if name not in ALGORITHMS]
-    if unknown:
-        raise ValueError(f"Unknown algorithms: {unknown}")
-
-    _validate_application_ids(application_ids)
-    base_contexts = {
-        app_id: build_benchmark_context(app_id) for app_id in application_ids
-    }
-    for ctx in base_contexts.values():
-        _apply_paper_source_program_model(ctx)
-        ctx["tmax"] = max(1, int(tmax))
-
-    runs: List[AlgorithmResult] = []
-    for seed in seed_values:
-        for algorithm_name in algorithm_names:
-            algorithm = ALGORITHMS[algorithm_name]
-            application_results: List[ApplicationResult] = []
-            for app_id in application_ids:
-                base_ctx = copy.deepcopy(base_contexts[app_id])
-                algorithm_ctx = configured_context(base_ctx, algorithm_name, seed)
-                algorithm_ctx["tmax"] = max(1, int(tmax))
-                raw_output = algorithm.run(copy.deepcopy(algorithm_ctx), seed=seed)
-                application_results.append(
-                    normalize_algorithm_output(
-                        base_ctx=algorithm_ctx,
-                        algorithm=algorithm_name,
-                        seed=seed,
-                        raw_output=raw_output,
-                    )
-                )
-            runs.append(_single_algorithm_result(algorithm_name, seed, application_results))
-
-    result: Dict[str, Any] = {
-        "application_ids": application_ids,
-        "algorithms": algorithm_names,
-        "seeds": seed_values,
-        "tmax": max(1, int(tmax)),
-        "runs": [run.to_dict() for run in runs],
-        "summary": _single_summary(runs),
-    }
-    if export_artifacts:
-        result["artifacts"] = _export_benchmark_result(result, mode="single")
-    return result
 
 
 def run_joint_context_benchmark(
@@ -967,31 +839,5 @@ def run_joint_context_benchmark(
     if export_artifacts:
         benchmark_result["artifacts"] = _export_benchmark_result(
             benchmark_result,
-            mode="joint",
         )
     return benchmark_result
-
-
-def run_joint_benchmark(
-    application_ids: Iterable[int],
-    *,
-    algorithms: Iterable[str] | None = None,
-    seeds: Iterable[int] | None = None,
-    tmax: int = 10,
-    population_size: int | None = None,
-    max_function_evaluations: int | None = None,
-    export_artifacts: bool = True,
-) -> Dict[str, Any]:
-    application_ids = _unique_ints(application_ids)
-    if not application_ids:
-        raise ValueError("At least one application_id is required")
-    joint_ctx = build_joint_context(application_ids)
-    return run_joint_context_benchmark(
-        joint_ctx,
-        algorithms=algorithms,
-        seeds=seeds,
-        tmax=tmax,
-        population_size=population_size,
-        max_function_evaluations=max_function_evaluations,
-        export_artifacts=export_artifacts,
-    )

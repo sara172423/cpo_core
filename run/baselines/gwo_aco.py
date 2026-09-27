@@ -1,10 +1,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
-
-from parameter.services import load_params_obj
-from .context import StandaloneOptimizerContext
+from typing import Any, Dict
 
 
 
@@ -14,30 +11,6 @@ class GWO_ACO:
     article_exact = False
     implementation = "categorical-alpha-beta-delta-gwo-reference-baseline"
     reference_doi = "10.1016/j.advengsoft.2013.12.007"
-
-    def run(
-        self,
-        base_ctx: Dict[str, Any],
-        seed: Optional[int] = None,
-    ):
-        from algorithm.gwo.core import run_gwo_aco
-
-        ctx = StandaloneOptimizerContext(base_ctx, seed=seed)
-        ctx["scheme"] = self.key
-        ctx["use_ranking"] = True
-        ctx["use_caching"] = True
-        ctx["v2i_only"] = False
-
-        params = load_params_obj()
-        tmax = max(1, int(ctx.get("tmax", 10)))
-        return run_gwo_aco(
-            ctx,
-            population_size=int(params.S),
-            iterations=tmax - 1,
-            use_pheromone=False,
-            use_rank_guidance=False,
-            use_cache_guidance=False,
-        )
 
     def run_joint(
         self,

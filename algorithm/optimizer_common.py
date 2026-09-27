@@ -1,13 +1,8 @@
-"""Shared optimizer contracts, task ranking, and solution evaluation.
-
-This module contains only problem-level operations used by more than one
-optimizer.  Algorithm-specific searches live in their own packages.
-"""
-
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Mapping, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Mapping, MutableMapping, Tuple
 
 
 def assignment_key(solution: Any) -> Tuple[Tuple[int, int], ...]:
@@ -37,6 +32,138 @@ def hamming_distance(left: Any, right: Any) -> int:
     return sum(
         left_map.get(task) != right_map.get(task)
         for task in tasks
+    )
+
+
+class EvaluationBudgetReached(RuntimeError):
+    """Internal signal raised when no new objective call may be paid for."""
+
+
+@dataclass(frozen=True)
+class ObjectiveEvaluation:
+    """One repaired solution and its memoized or newly computed objective."""
+
+    solution: Any
+    score: float
+    is_new: bool
+
+
+def _context_contract_value(context, name: str, default=None):
+    """Read an explicit adapter property before falling back to mapping data."""
+    value = getattr(context, name, None)
+    if value is not None:
+        return value
+    getter = getattr(context, "get", None)
+    return getter(name, default) if callable(getter) else default
+
+
+class ObjectiveEvaluationProtocol:
+    def __init__(
+        self,
+        context=None,
+        *,
+        population_size: int,
+        max_function_evaluations: int | None,
+        evaluator: Callable[[Any], float] | None = None,
+        repair: Callable[[Any], Any] | None = None,
+        key_factory: Callable[[Any], Any] = assignment_key,
+        initial_cache: Mapping[Any, float] | None = None,
+        initial_count: int | None = None,
+    ):
+        self.population_size = int(population_size)
+        self.budget = (
+            None
+            if max_function_evaluations is None
+            else max(1, int(max_function_evaluations))
+        )
+        if self.budget is not None and self.budget < self.population_size:
+            raise ValueError(
+                "max_function_evaluations must be at least population_size"
+            )
+
+        if initial_cache is None:
+            initial_cache = _context_contract_value(
+                context,
+                "initial_evaluation_memo",
+                {},
+            )
+        self.cache: MutableMapping[Any, float] = {
+            key: float(score)
+            for key, score in (initial_cache or {}).items()
+        }
+        if initial_count is None:
+            initial_count = _context_contract_value(
+                context,
+                "initial_function_evaluations",
+                0,
+            )
+        self.count = max(len(self.cache), int(initial_count or 0))
+
+        if repair is None:
+            repair = getattr(context, "repair_solution", None)
+        if evaluator is None:
+            evaluator = getattr(context, "evaluate_solution", None)
+        if evaluator is None:
+            evaluator = getattr(context, "evaluate", None)
+        if not callable(repair) or not callable(evaluator):
+            raise TypeError(
+                "ObjectiveEvaluationProtocol requires repair and evaluator callables"
+            )
+        self._repair = repair
+        self._evaluator = evaluator
+        self._key_factory = key_factory
+
+    @property
+    def exhausted(self) -> bool:
+        return self.budget is not None and self.count >= self.budget
+
+    @property
+    def remaining(self) -> int | None:
+        if self.budget is None:
+            return None
+        return max(0, self.budget - self.count)
+
+    def try_evaluate(self, raw_solution) -> ObjectiveEvaluation | None:
+        solution = self._repair(raw_solution)
+        key = self._key_factory(solution)
+        if not key:
+            return None
+        if key in self.cache:
+            return ObjectiveEvaluation(
+                solution=solution,
+                score=float(self.cache[key]),
+                is_new=False,
+            )
+        if self.exhausted:
+            return None
+        score = float(self._evaluator(solution))
+        self.cache[key] = score
+        self.count += 1
+        return ObjectiveEvaluation(solution=solution, score=score, is_new=True)
+
+    def evaluate(self, raw_solution) -> ObjectiveEvaluation:
+        result = self.try_evaluate(raw_solution)
+        if result is None:
+            raise EvaluationBudgetReached
+        return result
+
+
+def normalized_search_progress(
+    *,
+    function_evaluations: int,
+    initial_evaluations: int,
+    budget: int | None,
+    iteration: int,
+    iterations: int,
+) -> float:
+    """Use consumed search NFE when budgeted, generation fraction otherwise."""
+    if budget is not None and int(budget) > int(initial_evaluations):
+        used = max(0, int(function_evaluations) - int(initial_evaluations))
+        available = max(1, int(budget) - int(initial_evaluations))
+        return max(0.0, min(1.0, float(used) / float(available)))
+    return max(
+        0.0,
+        min(1.0, float(iteration) / float(max(1, iterations))),
     )
 
 
@@ -341,6 +468,9 @@ def materialize_solution(ctx, nest, task_order):
 
 __all__ = [
     "AlgorithmCancelled",
+    "EvaluationBudgetReached",
+    "ObjectiveEvaluation",
+    "ObjectiveEvaluationProtocol",
     "assignment_key",
     "compute_global_ranks",
     "compute_local_ranks",
@@ -350,6 +480,7 @@ __all__ = [
     "hamming_distance",
     "materialize_solution",
     "natural_topological_order",
+    "normalized_search_progress",
     "provider_map",
     "raise_if_cancelled",
     "refresh_shared_parameters",

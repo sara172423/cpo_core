@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import copy
 import random
-from algorithm.optimizer_common import assignment_key, hamming_distance
+from algorithm.optimizer_common import (
+    ObjectiveEvaluationProtocol,
+    assignment_key,
+    hamming_distance,
+)
 
 from .initial_population import create_initial_population
 from .memory import initialize_pheromone, update_pheromone
@@ -101,59 +105,27 @@ def run_gwo_aco(
 
     size = max(3, int(population_size))
     iterations = max(0, int(iterations))
-    evaluation_budget = (
-        None
-        if max_function_evaluations is None
-        else max(1, int(max_function_evaluations))
-    )
-    if evaluation_budget is not None and evaluation_budget < size:
-        raise ValueError(
-            "max_function_evaluations must be at least population_size so the "
-            "initial population can be evaluated"
-        )
     population = initial_population or create_initial_population(context, size, rng=rng)
     population = [context.repair_solution(solution) for solution in population]
     population = [solution for solution in population if solution][:size]
     if len(population) < size:
         raise RuntimeError(f"Initial population is {len(population)}, expected {size}")
 
-    # Joint benchmark adapters expose these as properties while their ``get``
-    # method intentionally delegates to the immutable problem context.  Read
-    # the explicit optimizer contract first so greedy-constructor evaluations
-    # are neither recomputed nor omitted from the fair NFE budget.
-    initial_memo = getattr(context, "initial_evaluation_memo", None)
-    if initial_memo is None:
-        initial_memo = context.get("initial_evaluation_memo", {})
-    initial_memo = initial_memo or {}
-    evaluation_cache = {
-        key: float(score)
-        for key, score in initial_memo.items()
-    }
-    initial_count = getattr(context, "initial_function_evaluations", None)
-    if initial_count is None:
-        initial_count = context.get("initial_function_evaluations", 0)
-    function_evaluations_total = max(
-        len(evaluation_cache),
-        int(initial_count or 0),
+    evaluations = ObjectiveEvaluationProtocol(
+        context,
+        population_size=size,
+        max_function_evaluations=max_function_evaluations,
     )
 
     def evaluate_batch(batch):
-        nonlocal function_evaluations_total
         rows = []
         for raw in batch:
-            solution = context.repair_solution(raw)
-            if not solution:
-                continue
-            key = assignment_key(solution)
-            if key not in evaluation_cache:
-                if (
-                    evaluation_budget is not None
-                    and function_evaluations_total >= evaluation_budget
-                ):
+            result = evaluations.try_evaluate(raw)
+            if result is None:
+                if evaluations.exhausted:
                     break
-                evaluation_cache[key] = float(context.evaluate(solution))
-                function_evaluations_total += 1
-            rows.append((solution, float(evaluation_cache[key])))
+                continue
+            rows.append((result.solution, result.score))
         return _sort_unique(rows)
 
     evaluated = evaluate_batch(population)
@@ -191,7 +163,7 @@ def run_gwo_aco(
                     sum(float(score) for _, score in evaluated) / float(max(1, len(evaluated)))
                 ),
                 "population_diversity_mean": float(_mean_pairwise_hamming(evaluated)),
-                "function_evaluations": int(function_evaluations_total),
+                "function_evaluations": int(evaluations.count),
             }
         )
 
@@ -293,10 +265,7 @@ def run_gwo_aco(
                 stagnation=stagnation_count,
             )
         record(iteration)
-        if (
-            evaluation_budget is not None
-            and function_evaluations_total >= evaluation_budget
-        ):
+        if evaluations.exhausted:
             break
 
     return context.repair_solution(best_solution), float(best_score), history

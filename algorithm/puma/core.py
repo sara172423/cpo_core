@@ -3,7 +3,12 @@ from __future__ import annotations
 import copy
 import random
 from collections import deque
-from algorithm.optimizer_common import assignment_key, hamming_distance
+from algorithm.optimizer_common import (
+    ObjectiveEvaluationProtocol,
+    assignment_key,
+    hamming_distance,
+    normalized_search_progress,
+)
 
 from .initial_population import create_initial_population
 from .operators import (
@@ -70,10 +75,6 @@ def run_puma(
     rng = random.Random(seed)
     size = max(2, int(population_size))
     iterations = max(0, int(iterations))
-    budget = None if max_function_evaluations is None else max(1, int(max_function_evaluations))
-    if budget is not None and budget < size:
-        raise ValueError("max_function_evaluations must be at least population_size")
-
     raw_population = list(
         initial_population or create_initial_population(context, size, rng)
     )
@@ -86,27 +87,18 @@ def run_puma(
         )
     population = [solution for solution, _score in population[:size]]
 
-    initial_memo = context.get("initial_evaluation_memo", {}) or {}
-    evaluation_cache = {key: float(value) for key, value in initial_memo.items()}
-    function_evaluations = max(
-        len(evaluation_cache), int(context.initial_function_evaluations or 0)
+    evaluations = ObjectiveEvaluationProtocol(
+        context,
+        population_size=size,
+        max_function_evaluations=max_function_evaluations,
     )
-
-    def evaluate(raw):
-        nonlocal function_evaluations
-        solution = context.repair_solution(raw)
-        key = assignment_key(solution)
-        if not key:
-            return None
-        if key not in evaluation_cache:
-            if budget is not None and function_evaluations >= budget:
-                return None
-            evaluation_cache[key] = float(context.evaluate_solution(solution))
-            function_evaluations += 1
-        return solution, float(evaluation_cache[key])
-
+    budget = evaluations.budget
     evaluated = _sort_unique(
-        row for row in (evaluate(solution) for solution in population) if row
+        (result.solution, result.score)
+        for result in (
+            evaluations.try_evaluate(solution) for solution in population
+        )
+        if result is not None
     )
     if len(evaluated) < size:
         raise RuntimeError(
@@ -114,7 +106,7 @@ def run_puma(
         )
     evaluated = evaluated[:size]
     best_solution, best_score = copy.deepcopy(evaluated[0][0]), float(evaluated[0][1])
-    initial_evaluations = int(function_evaluations)
+    initial_evaluations = int(evaluations.count)
     pcr = max(0.01, min(0.95, float(pcr_initial)))
     phase_state = {
         "exploration": {"gains": deque(maxlen=3), "efficiencies": deque(maxlen=3), "idle": 0},
@@ -123,13 +115,13 @@ def run_puma(
     history = []
 
     def progress(iteration):
-        if budget is not None and budget > initial_evaluations:
-            return max(0.0, min(
-                1.0,
-                (function_evaluations - initial_evaluations)
-                / float(budget - initial_evaluations),
-            ))
-        return max(0.0, min(1.0, iteration / float(max(1, iterations))))
+        return normalized_search_progress(
+            function_evaluations=evaluations.count,
+            initial_evaluations=initial_evaluations,
+            budget=budget,
+            iteration=iteration,
+            iterations=iterations,
+        )
 
     def phase_scores():
         gain_total = sum(sum(state["gains"]) for state in phase_state.values())
@@ -166,21 +158,21 @@ def run_puma(
             "generated_trials": int(generated),
             "accepted_candidates": int(accepted),
             "search_progress": float(progress(iteration)),
-            "function_evaluations": int(function_evaluations),
+            "function_evaluations": int(evaluations.count),
         })
 
     def run_phase(name, source_rows, target_evaluations, iteration):
         nonlocal pcr
         rows = [(copy.deepcopy(solution), float(score)) for solution, score in source_rows]
         occupied = {assignment_key(solution) for solution, _score in rows}
-        before_nfe = int(function_evaluations)
+        before_nfe = int(evaluations.count)
         old_best = max(score for _solution, score in rows)
         accepted = 0
         attempts = 0
         cursor = 0
         max_attempts = max(50, int(target_evaluations) * 30)
-        while function_evaluations - before_nfe < target_evaluations and attempts < max_attempts:
-            if budget is not None and function_evaluations >= budget:
+        while evaluations.count - before_nfe < target_evaluations and attempts < max_attempts:
+            if evaluations.exhausted:
                 break
             attempts += 1
             parent_index = cursor % len(rows)
@@ -203,10 +195,10 @@ def run_puma(
             key = assignment_key(candidate)
             if not key or key in occupied:
                 continue
-            result = evaluate(candidate)
+            result = evaluations.try_evaluate(candidate)
             if result is None:
                 break
-            solution, score = result
+            solution, score = result.solution, result.score
             if score > parent_score + 1e-12:
                 occupied.discard(assignment_key(parent))
                 occupied.add(key)
@@ -219,7 +211,7 @@ def run_puma(
 
         rows = _sort_unique(rows)
         gain = max(0.0, max(score for _solution, score in rows) - old_best)
-        paid = max(0, int(function_evaluations) - before_nfe)
+        paid = max(0, int(evaluations.count) - before_nfe)
         phase_state[name]["gains"].append(float(gain))
         phase_state[name]["efficiencies"].append(float(gain) / float(max(1, paid)))
         phase_state[name]["idle"] = 0
@@ -229,13 +221,13 @@ def run_puma(
 
     record(0, "initialization")
     for iteration in range(1, iterations + 1):
-        if budget is not None and function_evaluations >= budget:
+        if evaluations.exhausted:
             break
         generated = accepted = 0
         scores = phase_scores()
 
         if iteration <= max(0, int(unexperienced_iterations)):
-            remaining = size * 2 if budget is None else max(0, budget - function_evaluations)
+            remaining = size * 2 if budget is None else evaluations.remaining
             exploration_target = min(size, (remaining + 1) // 2)
             exploitation_target = min(size, max(0, remaining - exploration_target))
             explored, paid, kept, _attempts = run_phase(
@@ -265,7 +257,7 @@ def run_puma(
                 )
             else:
                 selected_phase = max(scores, key=scores.get)
-            remaining = size if budget is None else max(0, budget - function_evaluations)
+            remaining = size if budget is None else evaluations.remaining
             target = min(size, remaining)
             evaluated, paid, kept, _attempts = run_phase(
                 selected_phase, evaluated, target, iteration

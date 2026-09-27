@@ -4,7 +4,7 @@ import random
 from algorithm.optimizer_common import assignment_key
 
 
-GREEDY_RATIO = 0.0
+GREEDY_RATIO = 0.30
 
 
 def create_initial_population(context, size: int, rng=None):

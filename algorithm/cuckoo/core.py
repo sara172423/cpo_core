@@ -1,8 +1,4 @@
-"""Paper DCSGA/Cuckoo Search runtime.
 
-Only the Cuckoo orchestration lives here.  Problem equations, ranking and
-solution evaluation are provided by :mod:`algorithm.optimizer_common`.
-"""
 
 from __future__ import annotations
 

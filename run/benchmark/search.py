@@ -5,7 +5,11 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from parameter.services import load_params_obj
-from algorithm.optimizer_common import compute_global_ranks, compute_local_ranks
+from algorithm.optimizer_common import (
+    ObjectiveEvaluationProtocol,
+    compute_global_ranks,
+    compute_local_ranks,
+)
 
 from .evaluator import (
     JointEvaluation,
@@ -14,7 +18,7 @@ from .evaluator import (
     evaluate_joint_nest,
     evaluate_joint_nest_total,
 )
-from .schemes import (
+from .contracts import (
     JointScheme,
     get_joint_scheme,
 )
@@ -473,14 +477,9 @@ def generate_new_solution(
     )
 
 def _evaluate_population(
-    joint_ctx: Dict[str, Any],
     population: Iterable[Sequence[NestItem]],
     *,
-    task_order: Sequence[int],
-    scheme: JointScheme,
-    memo: Dict[Tuple[int, ...], float] | None = None,
-    evaluation_counter: Dict[str, int] | None = None,
-    max_function_evaluations: int | None = None,
+    evaluations: ObjectiveEvaluationProtocol,
 ) -> List[Tuple[List[NestItem], float]]:
     """Rank intermediate nests using the exact objective-only evaluator.
 
@@ -491,38 +490,11 @@ def _evaluate_population(
     """
 
     evaluated: List[Tuple[List[NestItem], float]] = []
-    if memo is None:
-        memo = {}
-
     for nest in population:
-        provider_by_task = {
-            int(task_id): int(provider_id)
-            for task_id, provider_id, _rank in nest
-        }
-        signature = tuple(provider_by_task[int(task_id)] for task_id in task_order)
-        if signature in memo:
-            total_efficiency = memo[signature]
-        else:
-            if (
-                max_function_evaluations is not None
-                and evaluation_counter is not None
-                and int(evaluation_counter.get("count", 0))
-                >= int(max_function_evaluations)
-            ):
-                break
-            total_efficiency = evaluate_joint_nest_total(
-                joint_ctx,
-                nest,
-                task_order,
-                use_caching=scheme.use_caching,
-                v2i_only=scheme.v2i_only,
-            )
-            memo[signature] = total_efficiency
-            if evaluation_counter is not None:
-                evaluation_counter["count"] = int(
-                    evaluation_counter.get("count", 0)
-                ) + 1
-        evaluated.append((list(nest), float(total_efficiency)))
+        result = evaluations.try_evaluate(nest)
+        if result is None:
+            break
+        evaluated.append((list(result.solution), float(result.score)))
 
     evaluated.sort(key=lambda row: row[1], reverse=True)
     return evaluated
@@ -750,17 +722,37 @@ def run_joint_dcsga(
         evaluation_memo=evaluation_memo,
         evaluation_counter=evaluation_counter,
     )
+    def provider_signature(nest):
+        provider_by_task = {
+            int(task_id): int(provider_id)
+            for task_id, provider_id, _rank in nest
+        }
+        return tuple(
+            provider_by_task[int(task_id)]
+            for task_id in task_order
+        )
+
+    evaluations = ObjectiveEvaluationProtocol(
+        population_size=S,
+        max_function_evaluations=max_function_evaluations,
+        evaluator=lambda nest: evaluate_joint_nest_total(
+            joint_ctx,
+            nest,
+            task_order,
+            use_caching=scheme.use_caching,
+            v2i_only=scheme.v2i_only,
+        ),
+        repair=lambda nest: list(nest),
+        key_factory=provider_signature,
+        initial_cache=evaluation_memo,
+        initial_count=evaluation_counter["count"],
+    )
     history: List[Dict[str, Any]] = []
 
     def evaluate_population(population):
         return _evaluate_population(
-            joint_ctx,
             population,
-            task_order=task_order,
-            scheme=scheme,
-            memo=evaluation_memo,
-            evaluation_counter=evaluation_counter,
-            max_function_evaluations=max_function_evaluations,
+            evaluations=evaluations,
         )
 
     def generate(source_nest, best_nest):
@@ -780,7 +772,7 @@ def run_joint_dcsga(
             _history_row(
                 iteration,
                 evaluated,
-                function_evaluations=int(evaluation_counter["count"]),
+                function_evaluations=int(evaluations.count),
             )
         )
 
@@ -794,10 +786,7 @@ def run_joint_dcsga(
         evaluate_population=evaluate_population,
         on_iteration=record_history,
         evaluation_budget_exhausted=(
-            None
-            if max_function_evaluations is None
-            else lambda: int(evaluation_counter["count"])
-            >= int(max_function_evaluations)
+            None if max_function_evaluations is None else lambda: evaluations.exhausted
         ),
     )
 

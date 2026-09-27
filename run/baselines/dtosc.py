@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import copy
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 class DTOSC:
@@ -18,26 +17,6 @@ class DTOSC:
     implementation = "semi-distributed-stage-dynamic-programming"
     reference_alignment = "published-description-and-project-equations"
     reference_doi = "10.1109/TVT.2022.3196544"
-
-    def run(
-        self,
-        base_ctx: Dict[str, Any],
-        seed: Optional[int] = None,
-    ):
-        from algorithm.dtosc.core import dtosc_run
-
-        if not isinstance(base_ctx, dict):
-            raise TypeError("base_ctx must be a dictionary")
-
-        ctx = copy.deepcopy(base_ctx)
-        ctx["seed"] = seed
-        ctx["scheme"] = self.key
-        ctx["use_ranking"] = True
-        ctx["use_caching"] = True
-        ctx["v2i_only"] = False
-        ctx["provider_scope"] = "local_and_rsu"
-        ctx["baseline_algorithm"] = self.key
-        return dtosc_run(ctx)
 
     def run_joint(
         self,

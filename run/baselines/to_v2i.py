@@ -1,30 +1,11 @@
 from __future__ import annotations
 
-import copy
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
 class TO_V2I:
     name = "TO_V2I"
     key = "to_v2i"
-
-    def run(
-        self,
-        base_ctx: Dict[str, Any],
-        seed: Optional[int] = None,
-    ):
-        from algorithm.cuckoo.core import dcsga_run
-
-        if not isinstance(base_ctx, dict):
-            raise TypeError("base_ctx must be a dictionary")
-
-        ctx = copy.deepcopy(base_ctx)
-        ctx["seed"] = seed
-        ctx["scheme"] = self.key
-        ctx["use_ranking"] = True
-        ctx["use_caching"] = True
-        ctx["v2i_only"] = True
-        return dcsga_run(ctx)
 
     def run_joint(
         self,

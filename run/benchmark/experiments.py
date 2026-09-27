@@ -19,7 +19,7 @@ from object.models import RSU, ServiceProvider, Vehicle
 from parameter.services import load_params_obj
 from resource.models import Resource
 
-from run.benchmark.protocol import (
+from run.benchmark.contracts import (
     FAIR_OPTIMIZER_COMPARISON,
     PAPER_REPRODUCTION,
     POPULATION_ALGORITHMS,

@@ -3,7 +3,11 @@ from __future__ import annotations
 import copy
 import math
 import random
-from algorithm.optimizer_common import assignment_key
+from algorithm.optimizer_common import (
+    EvaluationBudgetReached,
+    ObjectiveEvaluationProtocol,
+    assignment_key,
+)
 
 from .initial_population import create_initial_population, create_random_solution
 from .memory import ServiceAffinityMemory
@@ -24,10 +28,6 @@ from .operators import (
 STAGNATION_ESCAPE_AFTER = 5
 RESTART_FRACTION = 0.15
 ELITE_RATIO = 0.20
-
-
-class _EvaluationBudgetReached(RuntimeError):
-    """Internal control-flow signal; never escapes a successful optimizer run."""
 
 
 def _population_diversity_metrics(population):
@@ -172,17 +172,6 @@ def run_gpc(
         raise RuntimeError("GPC requires a non-empty ranked task order")
     size = max(2, int(population_size))
     generations = max(0, int(iterations))
-    evaluation_budget = (
-        None
-        if max_function_evaluations is None
-        else max(1, int(max_function_evaluations))
-    )
-    if evaluation_budget is not None and evaluation_budget < size:
-        raise ValueError(
-            "max_function_evaluations must be at least population_size so the "
-            "initial population can be evaluated"
-        )
-
     raw_population = list(
         initial_population or create_initial_population(context, size, rng)
     )
@@ -209,33 +198,15 @@ def run_gpc(
             f"Initial GPC population has {len(population)} unique solutions; expected {size}"
         )
 
-    initial_memo = context.get("initial_evaluation_memo", {}) or {}
-    evaluation_cache = {
-        key: float(score)
-        for key, score in initial_memo.items()
-    }
-    # Memo entries correspond to objective values already computed by the
-    # greedy constructor, so they are part of the real search budget.
-    function_evaluations_total = max(
-        len(evaluation_cache),
-        int(context.initial_function_evaluations or 0),
+    evaluations = ObjectiveEvaluationProtocol(
+        context,
+        population_size=size,
+        max_function_evaluations=max_function_evaluations,
     )
 
     def evaluate(solution):
-        nonlocal function_evaluations_total
-        repaired = context.repair_solution(solution)
-        key = assignment_key(repaired)
-        if key not in evaluation_cache:
-            if (
-                evaluation_budget is not None
-                and function_evaluations_total >= evaluation_budget
-            ):
-                raise _EvaluationBudgetReached
-            evaluation_cache[key] = float(
-                context.evaluate_solution(repaired)
-            )
-            function_evaluations_total += 1
-        return repaired, float(evaluation_cache[key])
+        result = evaluations.evaluate(solution)
+        return result.solution, result.score
 
     scored = _deduplicate_ranked(evaluate(solution) for solution in population)
     if len(scored) < size:
@@ -273,8 +244,8 @@ def run_gpc(
                 "population_mean_efficiency": float(
                     sum(float(score) for _solution, score in scored) / len(scored)
                 ),
-                "function_evaluations": int(function_evaluations_total),
-                "function_evaluations_total": int(function_evaluations_total),
+                "function_evaluations": int(evaluations.count),
+                "function_evaluations_total": int(evaluations.count),
                 "accepted_moves": int(total_accepted_moves),
                 "abandoned_workers": int(total_abandoned_workers),
                 "generated_replacements": int(total_generated_replacements),
@@ -364,7 +335,7 @@ def run_gpc(
                 )
             try:
                 moved, moved_score = evaluate(moved)
-            except _EvaluationBudgetReached:
+            except EvaluationBudgetReached:
                 budget_exhausted = True
                 candidates.append((copy.deepcopy(worker), float(worker_score)))
                 continue
@@ -385,7 +356,7 @@ def run_gpc(
                 )
                 try:
                     replacement, replacement_score = evaluate(replacement)
-                except _EvaluationBudgetReached:
+                except EvaluationBudgetReached:
                     budget_exhausted = True
                     candidates.append((copy.deepcopy(worker), float(worker_score)))
                 else:
@@ -416,7 +387,7 @@ def run_gpc(
                 try:
                     neighbor, neighbor_score = evaluate(neighbor)
                     candidates.append((neighbor, neighbor_score))
-                except _EvaluationBudgetReached:
+                except EvaluationBudgetReached:
                     budget_exhausted = True
                     break
                 if service_memory is not None and neighbor_score > float(global_score):
@@ -450,7 +421,7 @@ def run_gpc(
                 continue
             try:
                 replacement, replacement_score = evaluate(replacement)
-            except _EvaluationBudgetReached:
+            except EvaluationBudgetReached:
                 budget_exhausted = True
                 break
             pool.append((replacement, replacement_score))

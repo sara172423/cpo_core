@@ -1,7 +1,6 @@
 from django.urls import path
 
 from .views import (
-    benchmark,
     paper_benchmark,
     reset_simulation,
     simulation_status,
@@ -30,11 +29,6 @@ urlpatterns = [
         "reset/",
         reset_simulation,
         name="reset_simulation",
-    ),
-    path(
-        "benchmark/",
-        benchmark,
-        name="benchmark",
     ),
     path(
         "paper-benchmark/",
