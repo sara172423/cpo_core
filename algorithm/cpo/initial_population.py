@@ -3,9 +3,7 @@ from __future__ import annotations
 import random
 from algorithm.optimizer_common import assignment_key
 
-
 GREEDY_RATIO = 0.75
-
 
 def create_initial_population(context, size: int, rng=None):
     """Build CPO porcupines from greedy schedules and discrete coverage."""

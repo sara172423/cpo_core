@@ -17,6 +17,7 @@ from dag.models import ApplicationType, Task, TaskDependency
 from monarch_pylib.model import transmission
 from object.models import RSU, ServiceProvider, Vehicle
 from parameter.services import load_params_obj
+from system.rsu_access import select_access_rsu_by_csi
 from resource.models import Resource
 
 from run.benchmark.contracts import (
@@ -298,7 +299,12 @@ def _paper_reconstruction_audit(
             "service_program_transfer_energy_in_2025_article": True,
             "article_equation": 27,
             "article_numeric_size_published": False,
-            "current_size_model": "dtosc-2022-ratio-0.1-context-derived",
+            "current_size_model": (
+                f"dtosc-2022-ratio-{load_params_obj().source_program_fraction:.6g}-context-derived"
+            ),
+            "source_program_fraction": float(
+                load_params_obj().source_program_fraction
+            ),
             "classification": "DECLARED_ASSUMPTION_FOR_SIZE_ONLY",
         },
     }
@@ -553,34 +559,35 @@ def _road_geometry(vehicles: Sequence[Vehicle]) -> Tuple[float, List[float]]:
     return road_length, lanes
 
 
-def _nearest_rsu_id(
+def _access_rsu_by_csi(
+    *,
     position: Tuple[float, float],
+    vehicle_id: int,
     rsus: Sequence[RSU],
-    cell_radius_m: float,
-    h_vehicle: float,
-    h_rsu: float,
-) -> int:
-    nearest_id = None
-    nearest_distance = None
-    for rsu in rsus:
-        distance = float(
-            transmission.distance_3d(
-                float(position[0]),
-                float(position[1]),
-                float(h_vehicle),
-                float(rsu.x_coord),
-                float(rsu.y_coord),
-                float(h_rsu),
-            )
-        )
-        if distance > float(cell_radius_m):
-            continue
-        if nearest_distance is None or distance < nearest_distance:
-            nearest_distance = distance
-            nearest_id = int(rsu.id)
-    if nearest_id is None:
+    seed: int,
+) -> Tuple[int, float, float]:
+    """Select the covering RSU with the largest instantaneous V2I CSI gain.
+
+    The earlier reconstruction used the nearest RSU as a shortcut.  The article
+    states that access is selected from channel-state information, so the
+    corrected baseline evaluates V2I path loss, log-normal shadowing, Rayleigh
+    fading and antenna gains before choosing the access RSU.
+    """
+    params = load_params_obj()
+    rsu, gain, distance_m = select_access_rsu_by_csi(
+        rsus=rsus,
+        position_xyz=(
+            float(position[0]),
+            float(position[1]),
+            float(params.h_vehicle),
+        ),
+        params=params,
+        base_seed=int(seed),
+        vehicle_id=int(vehicle_id),
+    )
+    if rsu is None or gain is None or distance_m is None:
         raise ValueError(f"Vehicle position {position} is outside all RSU cells")
-    return nearest_id
+    return int(rsu.id), float(gain), float(distance_m)
 
 
 def _vehicle_count_for_speed(
@@ -664,16 +671,19 @@ def _road_state(
                 if speed_kmh is not None
                 else float(rng.uniform(60.0, 80.0))
             )
-    vehicle_rsu_ids = {
-        vehicle_id: _nearest_rsu_id(
-            position,
-            rsus,
-            float(params.cell_radius_rsu),
-            float(params.h_vehicle),
-            float(params.h_rsu),
+    vehicle_rsu_ids: Dict[int, int] = {}
+    vehicle_rsu_channel_gains: Dict[int, float] = {}
+    vehicle_rsu_distances_m: Dict[int, float] = {}
+    for vehicle_id, position in positions.items():
+        rsu_id, gain, distance_m = _access_rsu_by_csi(
+            position=position,
+            vehicle_id=int(vehicle_id),
+            rsus=rsus,
+            seed=int(seed),
         )
-        for vehicle_id, position in positions.items()
-    }
+        vehicle_rsu_ids[int(vehicle_id)] = int(rsu_id)
+        vehicle_rsu_channel_gains[int(vehicle_id)] = float(gain)
+        vehicle_rsu_distances_m[int(vehicle_id)] = float(distance_m)
     rsu_vehicle_counts: Dict[int, int] = {}
     for rsu_id in vehicle_rsu_ids.values():
         rsu_vehicle_counts[rsu_id] = rsu_vehicle_counts.get(rsu_id, 0) + 1
@@ -695,6 +705,15 @@ def _road_state(
         "vehicle_speed_max_kmh": float(max(speed_values)),
         "spatial_process": "spatial_poisson_conditioned_on_lane_vehicle_counts",
         "lane_vehicle_counts": lane_counts,
+        "rsu_association": "max_instantaneous_v2i_channel_gain_within_cell",
+        "access_rsu_channel_gain_by_vehicle": {
+            str(key): float(value)
+            for key, value in vehicle_rsu_channel_gains.items()
+        },
+        "access_rsu_distance_m_by_vehicle": {
+            str(key): float(value)
+            for key, value in vehicle_rsu_distances_m.items()
+        },
         "road_snapshot_signature": _snapshot_signature(
             snapshot,
             speeds,
@@ -703,6 +722,114 @@ def _road_state(
     }
     return snapshot, selected_ids, speeds, metadata
 
+
+def _spatial_poisson_road_state(
+    vehicles: Sequence[Vehicle],
+    rsus: Sequence[RSU],
+    seed: int,
+    speed_kmh: float,
+) -> Tuple[BenchmarkSnapshot, List[int], Dict[int, float], Dict[str, Any]]:
+    """Generate Figure 9 as a homogeneous 1-D spatial Poisson process per lane.
+
+    The article states that vehicles are dropped by a spatial Poisson process
+    and that the mean same-lane spacing is 2.5*v, with v in m/s.  The previous
+    reconstruction fixed the count to its expectation.  This corrected version
+    samples the count as well as the positions for every seed/speed.
+    """
+    if float(speed_kmh) <= 0.0:
+        raise ValueError("Figure-9 speed must be positive")
+
+    road_length_m, lane_x_values = _road_geometry(vehicles)
+    mean_spacing_m = 2.5 * (float(speed_kmh) / 3.6)
+    poisson_rng = random.Random(int(seed) * 1000003 + 15485863)
+    vehicle_rng = random.Random(int(seed) * 1000003 + 7919)
+
+    lane_points: List[Tuple[float, float]] = []
+    lane_counts: List[int] = []
+    for _attempt in range(10000):
+        lane_points = []
+        lane_counts = []
+        for lane_x in lane_x_values:
+            count = 0
+            y_coord = poisson_rng.expovariate(1.0 / mean_spacing_m)
+            while y_coord < road_length_m:
+                lane_points.append((float(lane_x), float(y_coord)))
+                count += 1
+                y_coord += poisson_rng.expovariate(1.0 / mean_spacing_m)
+            lane_counts.append(int(count))
+        if 2 <= len(lane_points) <= len(vehicles):
+            break
+    else:
+        raise ValueError(
+            "Unable to draw a Figure-9 spatial-Poisson road population within "
+            "the finite vehicle pool"
+        )
+
+    ordered = list(vehicles)
+    vehicle_rng.shuffle(ordered)
+    selected = ordered[: len(lane_points)]
+    positions: Dict[int, Tuple[float, float]] = {}
+    speeds: Dict[int, float] = {}
+    for vehicle, position in zip(selected, lane_points):
+        vehicle_id = int(vehicle.id)
+        positions[vehicle_id] = position
+        speeds[vehicle_id] = float(speed_kmh)
+
+    vehicle_rsu_ids: Dict[int, int] = {}
+    vehicle_rsu_channel_gains: Dict[int, float] = {}
+    vehicle_rsu_distances_m: Dict[int, float] = {}
+    for vehicle_id, position in positions.items():
+        rsu_id, gain, distance_m = _access_rsu_by_csi(
+            position=position,
+            vehicle_id=int(vehicle_id),
+            rsus=rsus,
+            seed=int(seed),
+        )
+        vehicle_rsu_ids[int(vehicle_id)] = int(rsu_id)
+        vehicle_rsu_channel_gains[int(vehicle_id)] = float(gain)
+        vehicle_rsu_distances_m[int(vehicle_id)] = float(distance_m)
+
+    rsu_vehicle_counts: Dict[int, int] = {}
+    for rsu_id in vehicle_rsu_ids.values():
+        rsu_vehicle_counts[int(rsu_id)] = rsu_vehicle_counts.get(int(rsu_id), 0) + 1
+
+    snapshot = BenchmarkSnapshot(
+        at=datetime(2000, 1, 1, tzinfo=timezone.utc),
+        time_step_s=0.0,
+        positions=positions,
+        vehicle_rsu_ids=vehicle_rsu_ids,
+        rsu_vehicle_counts=rsu_vehicle_counts,
+    )
+    selected_ids = [int(vehicle.id) for vehicle in selected]
+    expected_count = (4.0 * float(road_length_m)) / float(mean_spacing_m)
+    metadata = {
+        "road_vehicle_count": int(len(selected_ids)),
+        "road_length_m": float(road_length_m),
+        "number_of_lanes": int(len(lane_x_values)),
+        "mean_vehicle_speed_kmh": float(speed_kmh),
+        "vehicle_speed_min_kmh": float(speed_kmh),
+        "vehicle_speed_max_kmh": float(speed_kmh),
+        "spatial_process": "homogeneous_spatial_poisson_per_lane",
+        "mean_intervehicle_distance_m": float(mean_spacing_m),
+        "expected_road_vehicle_count": float(expected_count),
+        "sampled_road_vehicle_count": int(len(selected_ids)),
+        "lane_vehicle_counts": lane_counts,
+        "rsu_association": "max_instantaneous_v2i_channel_gain_within_cell",
+        "access_rsu_channel_gain_by_vehicle": {
+            str(key): float(value)
+            for key, value in vehicle_rsu_channel_gains.items()
+        },
+        "access_rsu_distance_m_by_vehicle": {
+            str(key): float(value)
+            for key, value in vehicle_rsu_distances_m.items()
+        },
+        "road_snapshot_signature": _snapshot_signature(
+            snapshot,
+            speeds,
+            selected_ids,
+        ),
+    }
+    return snapshot, selected_ids, speeds, metadata
 
 
 def _snapshot_signature(
@@ -840,16 +967,19 @@ def _extend_road_state_preserving_baseline(
                 else float(extension_rng.uniform(60.0, 80.0))
             )
 
-    vehicle_rsu_ids = {
-        vehicle_id: _nearest_rsu_id(
-            position,
-            rsus,
-            float(params.cell_radius_rsu),
-            float(params.h_vehicle),
-            float(params.h_rsu),
+    vehicle_rsu_ids: Dict[int, int] = {}
+    vehicle_rsu_channel_gains: Dict[int, float] = {}
+    vehicle_rsu_distances_m: Dict[int, float] = {}
+    for vehicle_id, position in positions.items():
+        rsu_id, gain, distance_m = _access_rsu_by_csi(
+            position=position,
+            vehicle_id=int(vehicle_id),
+            rsus=rsus,
+            seed=int(seed),
         )
-        for vehicle_id, position in positions.items()
-    }
+        vehicle_rsu_ids[int(vehicle_id)] = int(rsu_id)
+        vehicle_rsu_channel_gains[int(vehicle_id)] = float(gain)
+        vehicle_rsu_distances_m[int(vehicle_id)] = float(distance_m)
     rsu_vehicle_counts: Dict[int, int] = {}
     for rsu_id in vehicle_rsu_ids.values():
         rsu_vehicle_counts[rsu_id] = rsu_vehicle_counts.get(rsu_id, 0) + 1
@@ -872,6 +1002,15 @@ def _extend_road_state_preserving_baseline(
         "vehicle_speed_max_kmh": float(max(speed_values)),
         "spatial_process": "frozen-baseline-plus-seeded-cooperative-extension",
         "lane_vehicle_counts": target_lane_counts,
+        "rsu_association": "max_instantaneous_v2i_channel_gain_within_cell",
+        "access_rsu_channel_gain_by_vehicle": {
+            str(key): float(value)
+            for key, value in vehicle_rsu_channel_gains.items()
+        },
+        "access_rsu_distance_m_by_vehicle": {
+            str(key): float(value)
+            for key, value in vehicle_rsu_distances_m.items()
+        },
         "baseline_road_vehicle_count": int(base_count),
         "additional_cooperative_vehicle_count": int(extra_count),
         "mission_snapshot_frozen": True,
@@ -915,9 +1054,10 @@ def _assignments(
     only the DAG/task template.  The two are deliberately decoupled so a
     particular deadline is not permanently tied to one DAG topology.
 
-    Figure 7 still uses one master assignment pool and nested prefixes.  Over
-    each complete block of 64 assignments, every one of the eight deadlines
-    is paired exactly once with every one of the eight DAG templates.
+    Figure 7 still uses one master assignment pool and nested prefixes.
+    Deadline sampling follows the configured reconstruction weights, while DAG
+    templates are shuffled independently so deadline urgency is not permanently
+    coupled to one DAG topology.
     """
     if mission_vehicle_count > len(road_vehicle_ids):
         raise ValueError("Mission vehicle count exceeds road vehicle count")
@@ -951,25 +1091,24 @@ def _assignments(
     mission_rng.shuffle(mission_order)
     mission_order = mission_order[:pool_count]
 
-    # Non-uniform deadline distribution:
-    # strict and loose deadlines are less frequent, while normal QoS
-    # requirements are more frequent. The weights follow a Gaussian-like
-    # symmetric distribution:
-    # 30/100 -> 5%, 40/90 -> 10%, 50/80 -> 15%, 60/70 -> 20%.
+    # Reconstruction-only deadline sampling weights.  The weights are now
+    # explicit/configurable, but the seeded default
+    # [5,10,15,20,20,15,10,5] exactly preserves the previous baseline mix.
+    configured_weights = tuple(load_params_obj().deadline_sampling_weights)
+    if len(configured_weights) != len(DEADLINES_MS):
+        raise ValueError(
+            "deadline_sampling_weights must contain one weight for each paper deadline"
+        )
     deadline_weights = {
-        30: 5,
-        40: 10,
-        50: 15,
-        60: 20,
-        70: 20,
-        80: 15,
-        90: 10,
-        100: 5,
+        int(deadline): int(weight)
+        for deadline, weight in zip(DEADLINES_MS, configured_weights)
     }
 
     weighted_deadlines: List[int] = []
     for deadline in DEADLINES_MS:
-        weighted_deadlines.extend([int(deadline)] * deadline_weights[int(deadline)])
+        weighted_deadlines.extend(
+            [int(deadline)] * int(deadline_weights[int(deadline)])
+        )
 
     deadline_order = list(weighted_deadlines)
     dag_order = list(dag_type_ids)
@@ -1079,7 +1218,7 @@ def _build_scenario(
         "nested_mission_prefix": bool(assignment_pool_count is not None),
         "mean_mec_capacity_ghz": float(mec_capacity_ghz),
         "deadlines_s": [float(value) / 1000.0 for value in DEADLINES_MS],
-        "deadline_dag_assignment_model": "balanced-independent-seeded-pairing",
+        "deadline_dag_assignment_model": "weighted-independent-seeded-pairing",
         "deadline_dag_coupled": False,
         "article_speed_density_model": figure == "figure_9",
         "mission_vehicle_count_article_exact": figure != "figure_9",
@@ -1089,7 +1228,7 @@ def _build_scenario(
             if bool(road_metadata.get("mission_snapshot_frozen"))
             and int(road_metadata.get("additional_cooperative_vehicle_count", 0)) > 0
             else (
-                "speed-derived-density-capped-by-database-pool"
+                "per-lane-homogeneous-spatial-poisson"
                 if figure == "figure_9"
                 else (
                     "mission-count-sweep-with-fixed-road-pool-reconstruction"
@@ -3001,48 +3140,30 @@ def run_paper_experiment(
             ("avg_delay", "completion_rate"),
         )
     elif figure == "figure_9":
-        road_length_m, _ = _road_geometry(environment[0])
-
-        # The paper explicitly makes road density a function of speed in
-        # Fig. 9.  Compute the required counts from that rule first, then use
-        # only the canonical prefix needed by the densest point.  Consequently
-        # extra database rows above that requirement cannot perturb any Fig. 9
-        # realization.  If the database is smaller, the existing transparent
-        # finite-pool cap still applies instead of inventing vehicle records.
-        figure_9_required_counts = {
-            float(speed): _vehicle_count_for_speed(
-                float(speed),
-                road_length_m,
-                available_vehicle_count=None,
-            )
-            for speed in VEHICLE_SPEEDS_KMH
-        }
-        figure_9_pool_count = min(
-            max(figure_9_required_counts.values()),
-            available_vehicle_count,
-        )
-        figure_9_environment = (
-            list(environment[0][:figure_9_pool_count]),
-            environment[1],
-            environment[2],
-        )
-
+        # Figure 9 states that vehicles are dropped according to a spatial
+        # Poisson process and the mean same-lane spacing is 2.5*v (v in m/s).
+        # Sample the actual Poisson count and positions for every seed/speed
+        # instead of fixing the road population to its expected value.
         for speed_kmh in (sweep_values or VEHICLE_SPEEDS_KMH):
-            vehicle_count = min(
-                int(figure_9_required_counts[float(speed_kmh)]),
-                figure_9_pool_count,
-            )
             for seed in seeds:
+                road_state = _spatial_poisson_road_state(
+                    environment[0],
+                    environment[1],
+                    seed,
+                    float(speed_kmh),
+                )
+                sampled_vehicle_count = len(road_state[1])
                 joint_ctx = _build_scenario(
                     figure,
                     seed,
-                    mission_vehicle_count=vehicle_count,
-                    road_vehicle_count=vehicle_count,
+                    mission_vehicle_count=sampled_vehicle_count,
+                    road_vehicle_count=sampled_vehicle_count,
                     speed_kmh=float(speed_kmh),
                     mec_capacity_ghz=50.0,
                     sweep_parameter="speed_kmh",
                     sweep_value=float(speed_kmh),
-                    environment=figure_9_environment,
+                    environment=environment,
+                    road_state_override=road_state,
                 )
                 result = _run_scenario(
                     joint_ctx,
@@ -3352,14 +3473,26 @@ def run_paper_experiment(
                     "that 68-vehicle snapshot and adds cooperative-only peers"
                 ),
                 "figure_9": (
-                    "speed-derived road population from the article density "
-                    "rule, capped only by a finite database pool"
+                    "per-lane homogeneous spatial-Poisson road population using "
+                    "the article 2.5*v mean-spacing rule; realization is resampled "
+                    "only if it exceeds the finite database pool"
                 ),
                 "figure_10": (
                     "default: 68 mission/road vehicles; diagnostic override freezes "
                     "that 68-vehicle snapshot and adds cooperative-only peers"
                 ),
             },
+        },
+        "reconstruction_parameters": {
+            "deadline_sampling_weights_30_to_100_ms": list(
+                load_params_obj().deadline_sampling_weights
+            ),
+            "source_program_fraction": float(
+                load_params_obj().source_program_fraction
+            ),
+            "application_arrival_model": "static_joint_epoch",
+            "figure9_vehicle_process": "per-lane_homogeneous_spatial_poisson",
+            "rsu_association": "max_instantaneous_v2i_channel_gain_within_cell",
         },
         "article_parameters": {
             "vehicle_counts": list(VEHICLE_COUNTS),
@@ -3488,7 +3621,7 @@ def run_paper_experiment(
             "By default, Figures 6, 8, and 10 use the article-stated vehicle count as the complete scenario count because no separate larger road population is published. Figure 7 defaults to 52..76 mission vehicles inside a seeded 76-vehicle road pool. The optional diagnostic_road_vehicle_count separates mission and total road populations only for sensitivity analysis and is never labeled article-exact. Figure 9 alone changes road density with speed according to the article's 2.5-second spacing rule.",
             "Mission and cooperative roles are not forced to be disjoint: a mission vehicle may also provide V2V service to a same-RSU peer, consistent with the paper's alliance domain V_n excluding n; the paper does not publish a separate cooperative-only vehicle count.",
             "Each mission vehicle uses exactly one wireless access RSU. A selected remote MEC is reached through that access RSU and the inter-RSU broadband path adds zero modeled delay/energy because the paper does not publish backhaul parameters.",
-            "Figure 9 uses the article speed-density equation and caps only when the finite database pool is smaller than the derived road population.",
+            "Figure 9 samples a homogeneous spatial Poisson process independently on each lane using the article mean-spacing rule. A realization is resampled only if it exceeds the finite database vehicle pool.",
             "The service compile workload Wk is not reported in Table III and is set equal to the corresponding task workload as a declared deterministic assumption.",
             "The database contains multiple distinct ten-task DAG templates, but the exact DAG realizations and generator parameters used from reference [48] are not published; the stored DAGs are therefore reference-compatible reconstructions rather than source-exact graphs.",
         ],

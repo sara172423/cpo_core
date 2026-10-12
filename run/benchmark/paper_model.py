@@ -1,14 +1,4 @@
-"""Active mathematical helpers used by the paper benchmark.
 
-This module is intentionally isolated from Django and contains only the paper
-model equations that are consumed by the benchmark execution path:
-- Table III application weights
-- Equations (22)-(25): local reference time/energy and offloading efficiency
-- Equation (30): CPU-frequency allocation for vehicle SPs; MEC uses f_max
-
-Transmission-power/channel calculations are owned by the algorithm/library
-execution path and are intentionally not duplicated here.
-"""
 
 from __future__ import annotations
 
@@ -65,6 +55,51 @@ def article_weights(deadline_s: float) -> ApplicationWeights:
         alpha=float(alpha),
         beta=float(beta),
     )
+
+@dataclass(frozen=True)
+class CPOObjectiveWeights:
+    efficiency: float = 0.70
+    deadline: float = 0.15
+    cache: float = 0.10
+    load_balance: float = 0.05
+
+
+def cpo_weights(deadline_s: float) -> ApplicationWeights:
+   
+    deadline_s = _positive_finite(deadline_s, "deadline_s")
+
+    alpha = 0.01 / deadline_s + 0.6
+    beta = 1.0 - alpha
+
+    if not (0.0 <= alpha <= 1.0 and 0.0 <= beta <= 1.0):
+        raise PaperModelError("The CPO weights must be between zero and one")
+
+    return ApplicationWeights(
+        alpha=float(alpha),
+        beta=float(beta),
+    )
+
+
+def cpo_framework_score(
+    efficiency_score: float,
+    *,
+    deadline_score: float = 0.0,
+    cache_score: float = 0.0,
+    load_balance_score: float = 0.0,
+    weights: CPOObjectiveWeights = CPOObjectiveWeights(),
+) -> float:
+    """Optional CPO framework score.
+
+    This is not used by the shared fair optimizer comparison. It is intended
+    only for CPO self-comparison/ablation experiments.
+    """
+    return float(
+        weights.efficiency * efficiency_score
+        + weights.deadline * deadline_score
+        + weights.cache * cache_score
+        + weights.load_balance * load_balance_score
+    )
+
 def local_reference(
     cpu_cycles: Iterable[float],
     *,

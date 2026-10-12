@@ -755,6 +755,9 @@ def run_joint_context_benchmark(
     speed_density_exact = bool(
         scenario.get("article_speed_density_model", False)
     )
+    source_program_ratio = float(
+        joint_ctx.get("source_program_size_ratio", 0.10)
+    )
     benchmark_result: Dict[str, Any] = {
         "scientific_stage": "article-aligned-with-declared-limitations",
         "article_alignment": {
@@ -807,7 +810,7 @@ def run_joint_context_benchmark(
         },
         "warnings": [
             "DTOSC uses the legacy pre-repair stage-wise provider-path dynamic-programming reconstruction. It is retained for reproducibility/sensitivity and is not claimed to be source-exact DTOSC 2022.",
-            "Equation (27) of the 2025 paper explicitly includes energy for transmitting service programs. The paper does not publish the numerical source-program data size, so the current 0.1 * L_k source-size value remains a declared DTOSC-2022-derived reconstruction. The benchmark keeps the Eq. (27) energy term enabled; cache capacity still uses L_k and compile/install work still uses W_k.",
+            f"Equation (27) of the 2025 paper explicitly includes energy for transmitting service programs. The paper does not publish the numerical source-program data size, so the current {source_program_ratio:.6g} * L_k source-size value remains a declared DTOSC-2022-derived reconstruction. The benchmark keeps the Eq. (27) energy term enabled; cache capacity still uses L_k and compile/install work still uses W_k.",
             "The V2V channel and sender-side power model remain declared approximations.",
             "The 2025 paper reports 10 applications/s but does not specify how temporal arrivals are integrated into Figures 6-10; this static joint benchmark therefore does not invent an arrival process.",
         ] + (

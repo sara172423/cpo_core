@@ -11,7 +11,6 @@ from monarch_pylib.model.transmission import distance_3d
 from monarch_pylib.model import task_ranking
 from algorithm.greedy_nests import t_comp, link_rate, _providers
 
-SOURCE_PROGRAM_TO_ENVIRONMENT_RATIO = 0.1
 SOURCE_PROGRAM_SIZE_REFERENCE_DOI = "10.1109/TVT.2022.3196544"
 
 
@@ -93,6 +92,7 @@ class MiniSystemContextBuilder:
         service_size_bits = {}
         service_size_bytes = {}
         source_program_size_bits = {}
+        source_program_fraction = float(load_params_obj().source_program_fraction)
 
         for task in tasks:
             task_id = int(task.id)
@@ -135,7 +135,7 @@ class MiniSystemContextBuilder:
             service_size_bytes[task_type_id] = service_bytes
             source_program_size_bits[task_type_id] = max(
                 1,
-                int(round(service_bits * SOURCE_PROGRAM_TO_ENVIRONMENT_RATIO)),
+                int(round(service_bits * source_program_fraction)),
             )
 
         dependencies = defaultdict(list)
@@ -239,11 +239,10 @@ class MiniSystemContextBuilder:
         self.ctx["service_size_bytes"] = service_size_bytes
         self.ctx["source_program_size_bits"] = source_program_size_bits
         self.ctx["source_program_size_model"] = (
-            "dtosc-2022-ratio-0.1-context-derived"
+            f"dtosc-2022-ratio-{source_program_fraction:.6g}-context-derived"
         )
-        self.ctx["source_program_size_ratio"] = (
-            SOURCE_PROGRAM_TO_ENVIRONMENT_RATIO
-        )
+        self.ctx["source_program_fraction"] = float(source_program_fraction)
+        self.ctx["source_program_size_ratio"] = float(source_program_fraction)
         self.ctx["source_program_size_reference_doi"] = (
             SOURCE_PROGRAM_SIZE_REFERENCE_DOI
         )

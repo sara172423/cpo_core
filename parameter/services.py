@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 from parameter.models import Parameter
 
 
@@ -15,6 +15,23 @@ def _to_int(x: Any) -> int:
         return int(float(x))
     except Exception:
         raise ValueError(f"Cannot convert to int: {x}")
+
+
+
+
+def _to_int_tuple(x: Any, *, expected_len: int | None = None) -> Tuple[int, ...]:
+    if isinstance(x, str):
+        values = [part.strip() for part in x.split(",") if part.strip()]
+    elif isinstance(x, (list, tuple)):
+        values = list(x)
+    else:
+        raise ValueError(f"Cannot convert to integer tuple: {x}")
+    result = tuple(_to_int(value) for value in values)
+    if expected_len is not None and len(result) != int(expected_len):
+        raise ValueError(
+            f"Expected {expected_len} integer values, got {len(result)}"
+        )
+    return result
 
 
 def _require(raw: Dict[str, Any], key: str) -> Any:
@@ -65,6 +82,8 @@ class SimParams:
     vehicle_speed_max_kmh: float
     application_rate_per_second: float
     simulation_seed: int
+    deadline_sampling_weights: Tuple[int, ...]
+    source_program_fraction: float
 
     @property
     def beta_n(self) -> float:
@@ -83,6 +102,17 @@ class SimParamsLib:
 
 def load_params_obj() -> SimParams:
     raw = {p.key: p.value for p in Parameter.objects.all()}
+    deadline_sampling_weights = _to_int_tuple(
+        raw.get("deadline_sampling_weights", [5, 10, 15, 20, 20, 15, 10, 5]),
+        expected_len=8,
+    )
+    if any(value < 0 for value in deadline_sampling_weights) or sum(deadline_sampling_weights) <= 0:
+        raise ValueError(
+            "deadline_sampling_weights must contain eight non-negative integers with a positive sum"
+        )
+    source_program_fraction = _to_float(raw.get("source_program_fraction", 0.10))
+    if source_program_fraction <= 0.0:
+        raise ValueError("source_program_fraction must be greater than zero")
     return SimParams(
         B=_to_float(_require(raw, "B")),
         delta2=_to_float(_require(raw, "delta2")),
@@ -112,6 +142,8 @@ def load_params_obj() -> SimParams:
         vehicle_speed_max_kmh=_to_float(raw.get("vehicle_speed_max_kmh", 80.0)),
         application_rate_per_second=_to_float(raw.get("application_rate_per_second", 10.0)),
         simulation_seed=_to_int(raw.get("simulation_seed", 1)),
+        deadline_sampling_weights=deadline_sampling_weights,
+        source_program_fraction=source_program_fraction,
     )
 
 

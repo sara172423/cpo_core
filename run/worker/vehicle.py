@@ -14,6 +14,7 @@ from django.core.cache import cache
 from monarch_pylib.model import transmission
 
 from parameter.services import load_params_obj
+from system.rsu_access import select_access_rsu_by_csi
 from object.models import RSU, RSUVehicle, Vehicle, ServiceProvider
 from dag.models import ApplicationType
 from application.models import Application
@@ -61,48 +62,34 @@ def _to_float(v, default: float = 0.0) -> float:
         return float(default)
 
 
-def _euclid3(ax: float, ay: float, ah: float, bx: float, by: float, bh: float) -> float:
-    return float(
-        transmission.distance_3d(
-            _to_float(ax), _to_float(ay), _to_float(ah),
-            _to_float(bx), _to_float(by), _to_float(bh),
-        )
-    )
-
-
-def _nearest_rsu(
+def _best_channel_rsu(
     rsus,
     pos_xyz: Tuple[float, float, float],
-    h_rsu: float,
-    cell_radius_rsu: float | None = None
+    *,
+    vehicle_id: int,
+    base_seed: int,
 ) -> Optional[RSU]:
+    """Return the covering RSU with the best instantaneous V2I CSI.
 
-    best = None
-    best_d = None
-    vx, vy, vh = pos_xyz
+    The previous runtime worker used the nearest RSU.  The paper states that
+    access is selected from channel-state information, so runtime association
+    now uses the same CSI-based baseline correction as the benchmark builder.
+    """
+    params = load_params_obj()
+    rsu, _gain, _distance_m = select_access_rsu_by_csi(
+        rsus=rsus,
+        position_xyz=(
+            float(pos_xyz[0]),
+            float(pos_xyz[1]),
+            float(pos_xyz[2]),
+        ),
+        params=params,
+        base_seed=int(base_seed),
+        vehicle_id=int(vehicle_id),
+    )
+    return rsu
 
-    radius = None
-    if cell_radius_rsu is not None:
-        radius = max(0.0, float(cell_radius_rsu))
 
-    for r in rsus:
-        if r.x_coord is None or r.y_coord is None:
-            continue
-
-        rx = _to_float(r.x_coord)
-        ry = _to_float(r.y_coord)
-        rh = _to_float(h_rsu)
-
-        d = _euclid3(vx, vy, vh, rx, ry, rh)
-
-        if radius is not None and d > radius:
-            continue
-
-        if best is None or best_d is None or d < best_d:
-            best = r
-            best_d = d
-
-    return best
 def _close_rsu_vehicle_connections(queryset, end_time) -> int:
     """Close active RSU links through model.save() so connect_time is persisted."""
     closed = 0
@@ -360,22 +347,20 @@ class VehicleWorker(threading.Thread):
                 vehicle.y_coord = y
 
                 if route_active:
-                    nearest = _nearest_rsu(
+                    access_rsu = _best_channel_rsu(
                         rsus,
                         (
                             float(x),
                             float(y),
                             float(self.h_vehicle),
                         ),
-                        h_rsu=float(self.h_rsu),
-                        cell_radius_rsu=float(
-                            self.cfg.cell_radius_rsu
-                        ),
+                        vehicle_id=int(self.vehicle_id),
+                        base_seed=int(self.cfg.simulation_seed),
                     )
 
                     nearest_id = (
-                        nearest.id
-                        if nearest
+                        access_rsu.id
+                        if access_rsu
                         else None
                     )
 
